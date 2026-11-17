@@ -246,7 +246,8 @@ function engineIsMine() { const l = st().engine; return !!(l && l.id === ENGINE_
 function engineHeartbeat() {
   if (!SEC) return;
   const l = st().engine;
-  if (!l || l.id === ENGINE_ID || net.now() - (l.ts || 0) > 8000) net.set("state/engine", { id: ENGINE_ID, ts: net.now() });
+  // пишемо «пульс» раз на 3 с, а не щокадру: кожен запис перемальовує всі телефони
+  if (!l || (l.id === ENGINE_ID && net.now() - (l.ts || 0) > 3000) || (l.id !== ENGINE_ID && net.now() - (l.ts || 0) > 8000)) net.set("state/engine", { id: ENGINE_ID, ts: net.now() });
 }
 
 // ============================================================
@@ -525,7 +526,16 @@ if (ROLE === "admin") {
 let unsub = null;
 function boot() {
   document.body.dataset.role = ROLE;
-  unsub = net.onValue("", (data) => { S = data || {}; render(); if (ROLE === "projector") soundFromState(); if (ROLE === "admin") processActions(S.actions); });
+  let lastSig = "";
+  unsub = net.onValue("", (data) => {
+    S = data || {};
+    // «Пульс» пульта нічого не змінює для студентів — не перемальовуємо через нього екран
+    if (ROLE !== "admin") {
+      const st0 = S.state || {}; const { engine, ...rest } = st0;
+      const sig = JSON.stringify({ ...S, state: rest });
+      if (sig === lastSig) return; lastSig = sig;
+    }
+    render(); if (ROLE === "projector") soundFromState(); if (ROLE === "admin") processActions(S.actions); });
   document.addEventListener("click", () => { if (!audio && AC) try { audio = new AC(); } catch (e) {} }, { once: true });
   if (window.requestAnimationFrame) requestAnimationFrame(barrelLoop);
   if (ROLE === "projector") setInterval(renderTimerOnly, 500);
@@ -592,11 +602,17 @@ function leaderboardHTML(compact) {
   }).join("") + `</div>`;
 }
 // Великі кнопки тем для телефона стрільця: одна тема — один рядок.
+let pickedTerr = { key: "", terr: null };
+function curPick() {
+  const s = st(); const k = (s.round || 0) + "|" + s.turnTeam + "|" + s.shooter;
+  if (pickedTerr.key !== k) pickedTerr = { key: k, terr: null };
+  return pickedTerr;
+}
 function topicPickHTML() {
-  const used = st().usedQ || {};
+  const used = st().usedQ || {}; const cur = curPick().terr;
   return `<div class="topic-list">` + TERRITORIES.map((t) => {
     const left = QUESTIONS[t.id].filter((q) => !used[q.id]).length;
-    return `<button class="topic ${left ? "" : "empty"}" data-terr="${t.id}" ${left ? "" : "disabled"}>
+    return `<button class="topic ${left ? "" : "empty"} ${cur === t.id ? "picked" : ""}" data-terr="${t.id}" ${left ? "" : "disabled"}>
       <span class="topic-ico">${t.icon}</span>
       <span class="topic-txt"><b>${t.name}</b><span>${t.sub}</span></span>
       <span class="topic-left">${left ? left + " пит." : "немає"}</span></button>`;
@@ -868,7 +884,9 @@ function renderPlay(app) {
   else if (s.phase === "spin") {
     if (shooter && (!s.spin || s.spin.status === "idle")) {
       body = `<div class="step-lbl">Крок 1 з 2 · обери тему питання</div>${topicPickHTML()}
-      <div class="act-bar"><button class="btn big danger-btn" id="spinBtn" disabled>👆 Спершу обери тему</button></div>`;
+      <div class="act-bar">${curPick().terr
+        ? `<button class="btn big danger-btn pulse" id="spinBtn">🔫 Крок 2 · КРУТИТИ БАРАБАН</button>`
+        : `<button class="btn big danger-btn" id="spinBtn" disabled>👆 Спершу обери тему</button>`}</div>`;
     } else body = (s.spin && s.spin.status !== "idle") ? barrelHTML() : `<div class="center-msg">${myTurn ? "Стрілець обирає територію…" : "Ходить «" + esc((teams()[s.turnTeam] || {}).name || "") + "»"}</div>`;
   }
   // --- питання ---
@@ -979,9 +997,9 @@ function renderPlay(app) {
   $("#payDebt") && ($("#payDebt").onclick = () => act("payDebt"));
   app.querySelectorAll(".shooter-btn").forEach((b) => b.onclick = () => { act("shooter", { pid: b.dataset.p }); b.disabled = true; snd("click"); });
   // вибір території + спін (стрілець)
-  let chosenTerr = null;
+  let chosenTerr = curPick().terr;
   app.querySelectorAll(".topic[data-terr]:not([disabled])").forEach((b) => b.onclick = () => {
-    chosenTerr = b.dataset.terr;
+    chosenTerr = b.dataset.terr; pickedTerr.terr = chosenTerr;
     app.querySelectorAll(".topic").forEach((x) => x.classList.toggle("picked", x === b));
     const sb = $("#spinBtn"); if (sb) { sb.disabled = false; sb.textContent = "🔫 Крок 2 · КРУТИТИ БАРАБАН"; sb.classList.add("pulse"); }
     snd("click");
