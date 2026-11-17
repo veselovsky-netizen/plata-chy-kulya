@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Плата чи Куля — Фінансова імперія</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rye&family=Alegreya+Sans:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#17100c; --bg2:#241812; --card:#2b1d15; --line:#54381f;
+  --cream:#f5e6c8; --gold:#e3b341; --red:#c43b3b; --teal:#3aa6a0; --green:#2e9e6b;
+  --dim:#b59b78;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:radial-gradient(1200px 600px at 50% -10%, #3a2415 0%, var(--bg) 60%);
+  color:var(--cream);font-family:"Alegreya Sans",system-ui,sans-serif;min-height:100vh}
+h1,h2,h3,.title-big,.title-small,.lot-name,.raid-head,.duel-head,.lav-head{font-family:"Rye",serif;font-weight:400}
+.papel{height:26px;background:
+  linear-gradient(45deg,transparent 33%,var(--red) 33% 66%,transparent 66%) 0 0/28px 14px,
+  linear-gradient(-45deg,transparent 33%,var(--teal) 33% 66%,transparent 66%) 14px 12px/28px 14px,
+  linear-gradient(90deg,var(--gold),#b8860b);
+  border-bottom:3px solid #000;opacity:.9}
+.dim{color:var(--dim)} .small{font-size:.85em}
+.title-big{font-size:clamp(34px,7vw,84px);text-align:center;color:var(--gold);
+  text-shadow:3px 3px 0 #000,0 0 30px rgba(227,179,65,.3);letter-spacing:2px;margin-top:18px}
+.title-small{font-family:"Rye";color:var(--gold);font-size:20px}
+.subtitle{text-align:center;color:var(--dim);font-size:clamp(14px,2vw,22px);margin:8px 16px}
+.btn{background:linear-gradient(#5a3a1e,#3c2714);border:2px solid var(--gold);color:var(--cream);
+  padding:12px 18px;border-radius:10px;font-size:17px;font-weight:700;cursor:pointer;margin:4px 2px;font-family:inherit}
+.btn:active{transform:scale(.97)} .btn.big{width:100%;padding:16px;font-size:19px;margin-top:12px}
+.btn.mini{padding:6px 10px;font-size:13px} .btn.cur{background:var(--gold);color:#241404}
+.btn.gold{background:linear-gradient(#e3b341,#a87d1c);color:#241404}
+.btn.yes{border-color:var(--green)} .btn.no{border-color:var(--red)}
+.danger-btn{background:linear-gradient(#8e2727,#5c1414);border-color:var(--red)}
+.inp{width:100%;padding:14px;font-size:18px;border-radius:10px;border:2px solid var(--line);
+  background:#1d130d;color:var(--cream);margin:8px 0;font-family:inherit}
+.timer{font-weight:800;color:var(--gold);font-size:1.2em}.timer.danger{color:var(--red);animation:blink .5s infinite alternate}
+@keyframes blink{from{opacity:1}to{opacity:.4}}
+/* home */
+.home{max-width:1000px;margin:0 auto;padding:20px;text-align:center}
+.home-cards{display:flex;gap:18px;justify-content:center;flex-wrap:wrap;margin:40px 0}
+.home-card{background:var(--card);border:3px solid var(--gold);border-radius:16px;padding:28px 34px;
+  text-decoration:none;color:var(--cream);width:240px;transition:.15s}
+.home-card:hover{transform:translateY(-4px);box-shadow:0 10px 30px rgba(0,0,0,.5)}
+.hc-icon{font-size:52px}.home-card h3{color:var(--gold);margin:10px 0 6px;font-size:24px}
+.mode-badge{display:inline-block;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:6px 16px;color:var(--dim)}
+/* lobby projector */
+.qr-box{display:inline-block;background:var(--cream);padding:18px;border-radius:14px;border:4px solid var(--gold);margin:14px}
+.qr-url{color:#241404;font-weight:800;margin-top:8px;font-size:14px;word-break:break-all;max-width:220px}
+.lobby-teams{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:10px}
+.lob-team{background:var(--card);border:2px solid var(--tc);border-radius:12px;padding:10px 14px;min-width:170px}
+.lt-head{color:var(--tc);font-weight:800;border-bottom:1px solid var(--line);padding-bottom:6px;margin-bottom:6px}
+.lt-m{padding:2px 0}
+/* projector game layout */
+.proj-game{display:grid;grid-template-columns:1fr 330px;grid-template-rows:auto 1fr;height:calc(100vh - 29px);gap:10px;padding:10px}
+.proj-top{grid-column:1/3;display:flex;justify-content:space-between;align-items:center;background:var(--card);
+  border:2px solid var(--line);border-radius:12px;padding:8px 18px}
+.round-badge{background:var(--gold);color:#241404;font-weight:800;border-radius:8px;padding:4px 12px}
+.proj-main{overflow:auto;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:14px}
+.proj-side{display:flex;flex-direction:column;gap:10px;overflow:auto}
+.center-msg{font-size:clamp(20px,3vw,34px);text-align:center;line-height:1.5}
+/* leaderboard */
+.lb{display:flex;flex-direction:column;gap:6px}
+.lb-row{display:flex;align-items:center;gap:8px;background:var(--card);border-left:6px solid var(--tc);
+  border-radius:8px;padding:8px 10px;font-size:16px}
+.lb-row.turn{outline:2px solid var(--gold);background:#3a2a16}
+.lb-pos{font-weight:800;color:var(--dim);width:18px}.lb-name{flex:1;font-weight:700}
+.lb-cash{font-weight:800;color:var(--gold)}.lb-dirty{color:#d79c5a;font-size:13px}.lb-debt{color:#e07070;font-size:13px}
+.lb-n{color:var(--dim);font-size:12px}
+.log-box{background:#140d09;border:1px solid var(--line);border-radius:10px;padding:8px;font-size:13px;color:var(--dim)}
+.log-box.tall{min-height:200px;max-height:45vh;overflow:auto}
+.log-line{padding:3px 0;border-bottom:1px dashed #2e1f14}
+/* territories */
+.terr-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;width:100%;max-width:900px}
+.terr{background:var(--card);border:3px solid var(--line);border-top:6px solid var(--oc,var(--line));border-radius:14px;padding:14px;text-align:center}
+.terr.clickable{cursor:pointer}.terr.clickable:active{transform:scale(.97)}
+.terr.picked{outline:3px solid var(--gold)}.terr.empty{opacity:.4}
+.terr-ico{font-size:40px}.terr-name{font-family:"Rye";font-size:20px;color:var(--gold)}
+.terr-sub{font-size:12px;color:var(--dim);margin:4px 0}.terr-own{font-size:14px;font-weight:700}.terr-left{font-size:12px;color:var(--dim)}
+/* barrel */
+.barrel-wrap{text-align:center}
+.barrel{width:min(46vh,320px);margin:0 auto;filter:drop-shadow(0 8px 20px rgba(0,0,0,.6))}
+.barrel.spinning{animation:spin 2.4s cubic-bezier(.2,.8,.3,1) forwards}
+@keyframes spin{from{transform:rotate(0)}to{transform:rotate(1470deg)}}
+.barrel-result{font-family:"Rye";font-size:clamp(24px,4vw,44px);margin-top:14px;animation:pop .4s}
+.lvl-easy{color:var(--green)}.lvl-mid{color:var(--gold)}.lvl-deadly{color:var(--red)}.lvl-blank{color:var(--cream)}
+@keyframes pop{from{transform:scale(.3);opacity:0}}
+/* question card */
+.q-card{background:var(--card);border:3px solid var(--gold);border-radius:16px;padding:18px;max-width:900px;width:100%}
+.q-card.proj .q-text{font-size:clamp(20px,2.6vw,30px)}
+.q-meta{color:var(--dim);font-size:14px;margin-bottom:8px}
+.q-text{font-size:19px;font-weight:700;line-height:1.4;margin-bottom:12px}
+.opts{display:grid;gap:8px}
+.opt{text-align:left;background:#1d130d;border:2px solid var(--line);color:var(--cream);padding:12px;border-radius:10px;font-size:16px;cursor:pointer;font-family:inherit}
+.opt.sel{border-color:var(--gold);background:#3a2a16}
+.hint{color:var(--dim);font-size:13px;margin-top:6px}
+.order-item{display:flex;align-items:center;gap:10px;background:#1d130d;border:2px solid var(--line);border-radius:10px;padding:10px;margin:6px 0}
+.order-num{background:var(--gold);color:#241404;font-weight:800;border-radius:6px;padding:2px 8px}
+.order-btns{margin-left:auto}.ob{background:#3c2714;border:1px solid var(--gold);color:var(--cream);border-radius:6px;padding:4px 10px;margin-left:4px;cursor:pointer}
+.match-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:6px 0;align-items:center}
+.match-left{background:#1d130d;border:2px solid var(--line);border-radius:10px;padding:10px;font-size:14px}
+.match-sel{padding:10px;border-radius:10px;background:#1d130d;color:var(--cream);border:2px solid var(--line);font-family:inherit;max-width:100%}
+.sort2-head{display:flex;justify-content:space-between;font-weight:800;color:var(--gold);margin-bottom:6px;font-size:14px}
+.sort2-row{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#1d130d;border:2px solid var(--line);border-radius:10px;padding:8px 10px;margin:6px 0;font-size:14px}
+.s2{width:42px;height:36px;border-radius:8px;border:2px solid var(--line);background:#2b1d15;color:var(--cream);font-weight:800;cursor:pointer}
+.s2.sel{background:var(--gold);color:#241404;border-color:var(--gold)}
+.oral-note{background:#1d130d;border:2px dashed var(--gold);border-radius:10px;padding:14px;text-align:center}
+.oral-ready{color:var(--green);font-weight:800;font-size:22px;text-align:center;margin-top:10px;animation:blink 1s infinite alternate}
+.advice{margin-top:10px}.adv-row{color:var(--teal);font-size:14px;padding:2px 0}
+.omerta{background:#1d130d;border:2px solid var(--red);border-radius:10px;padding:12px;text-align:center;color:#e09c9c;margin-top:10px}
+/* bets */
+.bets-strip{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap}
+.bet-chip{border:2px solid var(--tc);border-radius:20px;padding:4px 12px;font-weight:700;font-size:14px}
+.bet-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.bet-btn.za{border-color:var(--green)}.bet-btn.pr{border-color:var(--red)}
+.bet-done{background:#1d130d;border:2px solid var(--teal);border-radius:10px;padding:10px;text-align:center;margin-top:8px}
+/* reveal */
+.reveal{text-align:center;padding:30px;border-radius:20px;max-width:800px;width:100%}
+.reveal.good{background:rgba(46,158,107,.12);border:3px solid var(--green)}
+.reveal.part{background:rgba(227,179,65,.1);border:3px solid var(--gold)}
+.reveal.bad{background:rgba(196,59,59,.12);border:3px solid var(--red)}
+.reveal-big{font-family:"Rye";font-size:clamp(26px,5vw,52px)}
+.reveal-delta{font-size:clamp(22px,4vw,40px);font-weight:800;color:var(--gold);margin:10px 0}
+.reveal-expl{color:var(--dim);font-size:16px;margin-top:10px;line-height:1.4}
+.nada-res{font-size:24px;font-weight:800;color:var(--gold);margin-top:8px}
+/* events */
+.raid-card,.duel-card,.lav-card,.loteria-card{background:var(--card);border:4px solid var(--red);border-radius:18px;padding:24px;text-align:center;max-width:860px;width:100%}
+.duel-card{border-color:var(--gold)} .lav-card{border-color:var(--teal);text-align:left}
+.raid-head,.duel-head,.lav-head{font-size:clamp(22px,3.4vw,38px);color:var(--red);margin-bottom:12px}
+.duel-head{color:var(--gold)} .lav-head{color:var(--teal)}
+.raid-sub{color:var(--dim);margin-top:10px}
+.yn{display:flex;gap:12px;margin-top:14px}.yn .btn{flex:1}
+.loteria-card{border-color:var(--gold);animation:pop .4s}
+.lot-ico{font-size:80px}.lot-name{font-size:40px;color:var(--gold)}.lot-text{font-size:20px;margin-top:8px}
+/* podium */
+.podium-wrap{text-align:center;padding:10px}
+.podium{display:flex;justify-content:center;align-items:flex-end;gap:14px;margin-top:30px}
+.pod{background:var(--card);border:3px solid var(--gold);border-radius:14px 14px 0 0;padding:16px;width:min(26vw,240px)}
+.pod-0{height:300px}.pod-1{height:240px}.pod-2{height:200px}
+.pod-ico{font-size:46px}.pod-name{font-family:"Rye";font-size:20px;color:var(--gold)}
+.pod-cash{font-size:22px;font-weight:800}.pod-base{font-size:40px;margin-top:8px}
+.final-rest{margin-top:20px;color:var(--dim)}
+/* join / play */
+.join{max-width:460px;margin:0 auto;padding:20px;text-align:center}
+.join-teams{display:grid;gap:10px;margin-top:10px}
+.jt{display:flex;justify-content:space-between;align-items:center;background:var(--card);border:2px solid var(--tc);
+  color:var(--cream);padding:14px;border-radius:12px;font-size:17px;font-weight:700;cursor:pointer;font-family:inherit}
+.jt.full{opacity:.4}.jt-n{color:var(--dim)}
+.play{display:flex;flex-direction:column;min-height:calc(100vh - 29px)}
+.play-top{display:flex;align-items:center;gap:10px;background:var(--card);border-bottom:3px solid var(--tc);padding:10px 12px;font-weight:800;position:sticky;top:0;z-index:5}
+.play-cash{margin-left:auto;color:var(--gold)}
+.exit{background:none;border:1px solid var(--line);color:var(--dim);border-radius:8px;width:30px;height:30px;cursor:pointer}
+.play-body{flex:1;padding:14px;display:flex;flex-direction:column;justify-content:center;gap:10px;max-width:560px;width:100%;margin:0 auto}
+.play-foot{padding:8px 12px;color:var(--dim);font-size:13px;border-top:1px solid var(--line);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.phase-head{font-family:"Rye";font-size:22px;color:var(--gold);text-align:center}
+.shooter-list{display:grid;gap:8px}
+.cap-tools{margin-top:20px}
+/* admin */
+.admin{display:grid;grid-template-columns:240px 1fr 300px;gap:12px;padding:12px;align-items:start}
+.adm-col{display:flex;flex-direction:column;gap:12px}
+.adm-box{background:var(--card);border:2px solid var(--line);border-radius:12px;padding:12px}
+.adm-box .btn{display:block;width:100%;text-align:left}
+.adm-box .btn.mini{display:inline-block;width:auto}
+.adm-title{font-family:"Rye";color:var(--gold);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+.cheat{background:#140d09;border:2px dashed var(--gold);border-radius:10px;padding:12px}
+.cheat-head{color:var(--gold);font-weight:800;margin-bottom:6px}
+.cheat-ans{color:var(--green);font-weight:700;margin:8px 0;line-height:1.5}
+.cheat-expl{color:var(--dim);font-size:14px;line-height:1.4}
+.oral-judge{display:flex;gap:10px;margin-top:10px}.oral-judge .btn{flex:1}
+.adm-team{border-left:5px solid var(--tc);background:#1d130d;border-radius:8px;padding:8px;margin-bottom:8px}
+.at-head{font-size:14px;margin-bottom:4px}.at-btns{float:right}
+.at-m{font-size:14px;padding:3px 6px;border-radius:6px;cursor:pointer}.at-m:hover{background:#2b1d15}.at-m.sil{color:var(--dim)}
+.duel-pick{font-size:13px;display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:6px}
+.duel-pick select{background:#1d130d;color:var(--cream);border:1px solid var(--line);border-radius:6px;padding:4px;font-family:inherit;max-width:90px}
+@media(max-width:900px){.proj-game{grid-template-columns:1fr}.proj-side{flex-direction:row}.admin{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<!-- Firebase (compat). Поки firebase-config.js порожній — гра працює в локальному режимі. -->
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
+<script src="firebase-config.js"></script>
+<script src="net.js"></script>
+<script src="questions.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
