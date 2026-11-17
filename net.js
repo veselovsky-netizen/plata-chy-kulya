@@ -40,6 +40,9 @@
     const db = firebase.database();
     const root = () => db.ref("rooms/" + ROOM);
     const ref = (p) => (p ? root().child(p) : root());
+    // поправка годинника: час сервера Firebase, щоб таймери й дуелі не залежали від годинника телефона
+    let offset = 0;
+    db.ref(".info/serverTimeOffset").on("value", (s) => { offset = s.val() || 0; });
     net = {
       mode: "firebase",
       room: ROOM,
@@ -52,7 +55,8 @@
         const h = ref.on("value", (s) => cb(s.val()));
         return () => ref.off("value", h);
       },
-      serverNow: () => Date.now(), // достатньо для таймерів на парі
+      now: () => Date.now() + offset,
+      serverTs: () => firebase.database.ServerValue.TIMESTAMP,
     };
   } else {
     // ---------- LOCAL MODE ----------
@@ -65,9 +69,11 @@
       catch (e) { return {}; }
     }
     function save(data) { localStorage.setItem(KEY, JSON.stringify(data)); }
+    let gen = 0;
     function notifyAll() {
-      const data = load();
+      const my = ++gen; const data = load();
       for (const l of listeners) {
+        if (gen !== my) return; // під час розсилки з'явились свіжіші дані — старі не доставляємо
         try { l.cb(JSON.parse(JSON.stringify(pget(data, l.path)))); } catch (e) { console.error(e); }
       }
     }
@@ -101,7 +107,8 @@
         setTimeout(() => { try { cb(JSON.parse(JSON.stringify(pget(load(), p)))); } catch (e) {} }, 0);
         return () => { const i = listeners.indexOf(l); if (i >= 0) listeners.splice(i, 1); };
       },
-      serverNow: () => Date.now(),
+      now: () => Date.now(),
+      serverTs: () => Date.now(),
       _wipe: () => { save({}); broadcast(); },
     };
   }

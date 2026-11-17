@@ -73,7 +73,7 @@ const RULES_HTML = `<ol class="rules">
 </ol>`;
 function qById(qid) { for (const terr in QUESTIONS) for (const q of QUESTIONS[terr]) if (q.id === qid) return { ...q, terr }; return null; }
 function terrDef(id) { return TERRITORIES.find((t) => t.id === id); }
-function log(msg) { net.push("log", { t: Date.now(), msg }); }
+function log(msg) { net.push("log", { t: net.now(), msg }); }
 
 // ============================================================
 // ЗВУК (WebAudio, все синтезоване — файлів не треба)
@@ -115,39 +115,54 @@ function soundFromState() {
   if (s.spin && s.spin.status === "spinning") snd("spin");
   else if (s.spin && s.spin.status === "done") snd(s.spin.result === "blank" ? "blank" : "shot");
   if (s.phase === "raid") snd("siren");
-  if (s.revealData && Date.now() - s.revealData.ts < 3000) snd(s.revealData.ok >= 0.5 ? "win" : "lose");
+  if (s.revealData && net.now() - s.revealData.ts < 3000) snd(s.revealData.ok >= 0.5 ? "win" : "lose");
 }
+
+// ============================================================
+// ВІДПОВІДІ (зашифровані; розшифровує лише пульт викладача)
+// ============================================================
+let SEC = null; // { q: {qid: {...}}, raid: [...], duel: [...], lav: [...] }
+async function unlockAnswers(pass) {
+  const enc = window.ANSWERS_ENC; if (!enc) throw new Error("no answers");
+  const b = (x) => Uint8Array.from(atob(x), (c) => c.charCodeAt(0));
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(pass), "PBKDF2", false, ["deriveKey"]);
+  const key = await crypto.subtle.deriveKey({ name: "PBKDF2", salt: b(enc.salt), iterations: 200000, hash: "SHA-256" }, base, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  const gz = await crypto.subtle.decrypt({ name: "AES-GCM", iv: b(enc.iv) }, key, b(enc.data));
+  const raw = await new Response(new Blob([gz]).stream().pipeThrough(new DecompressionStream("gzip"))).text();
+  SEC = JSON.parse(raw);
+  return SEC;
+}
+const secQ = (id) => (SEC && SEC.q[id]) || {};
 
 // ============================================================
 // ОЦІНЮВАННЯ ВІДПОВІДЕЙ (частка правильності 0..1)
 // ============================================================
-function scoreAnswer(q, v) {
-  if (v == null) return 0;
-  if (q.type === "single") return v === q.correct ? 1 : 0;
+function scoreAnswer(q, sec, v) {
+  if (v == null || !sec) return 0;
+  const vv = Array.isArray(v) ? v : [];
+  if (q.type === "single") return v === sec.correct ? 1 : 0;
   if (q.type === "multi") {
-    const c = new Set(q.correct); let ok = 0;
-    const vv = Array.isArray(v) ? v : [];
+    const c = new Set(sec.correct); let ok = 0;
     for (const i of vv) if (c.has(i)) ok++; else ok--; // штраф за зайве
-    return Math.max(0, ok) / q.correct.length;
+    return Math.max(0, ok) / sec.correct.length;
   }
-  if (q.type === "order") {
-    const vv = Array.isArray(v) ? v : []; let ok = 0;
-    for (let i = 0; i < q.items.length; i++) if (vv[i] === i) ok++;
-    return ok / q.items.length;
-  }
-  if (q.type === "match") {
-    const vv = Array.isArray(v) ? v : []; let ok = 0;
-    for (let i = 0; i < q.pairs.length; i++) if (vv[i] === i) ok++;
-    return ok / q.pairs.length;
-  }
-  if (q.type === "sort2") {
-    const vv = Array.isArray(v) ? v : []; let ok = 0;
-    for (let i = 0; i < q.items.length; i++) if (vv[i] === q.items[i][1]) ok++;
-    return ok / q.items.length;
-  }
+  const cmp = (arr, n) => { let ok = 0; for (let i = 0; i < n; i++) if (vv[i] === arr[i]) ok++; return ok / n; };
+  if (q.type === "order") return cmp(sec.order, sec.order.length);
+  if (q.type === "match") return cmp(sec.map, sec.map.length);
+  if (q.type === "sort2") return cmp(sec.cols, sec.cols.length);
   return 0;
 }
-
+// правильна відповідь людською мовою (для шпаргалки і для розбору на проєкторі)
+function answerText(q, sec, html) {
+  const e = html ? esc : (x) => x; const br = html ? "<br>" : "; ";
+  if (!sec) return "";
+  if (q.type === "single") return e(q.opts[sec.correct]);
+  if (q.type === "multi") return sec.correct.map((i) => e(q.opts[i])).join(br);
+  if (q.type === "order") return sec.order.map((i, k) => (k + 1) + ". " + e(q.items[i])).join(br);
+  if (q.type === "match") return q.left.map((l, i) => e(l) + " → " + e(q.right[sec.map[i]])).join(br);
+  if (q.type === "sort2") return q.items.map((it, i) => (sec.cols[i] === "A" ? q.colA : q.colB) + ": " + e(it)).join(br);
+  return "";
+}
 
 // ============================================================
 // ДІАЛОГИ НА СТОРІНЦІ (системні confirm/alert блокуються в деяких браузерах)
@@ -172,21 +187,81 @@ function uiConfirm(text, okLabel) {
 }
 
 // ============================================================
+// ДІЇ З ТЕЛЕФОНІВ → черга actions → обробляє ЛИШЕ пульт
+// (так гроші рахує одне місце і нічого не «губиться»)
+// ============================================================
+function act(type, payload) { net.push("actions", { type, ...(payload || {}), by: myPid, t: net.now() }); }
+// хто з команди може відповідати: ті, хто відповідав найменше разів за гру
+function eligibleShooters(tid) {
+  const ms = teamMembers(tid); if (!ms.length) return [];
+  const cnt = (pid) => ((teams()[tid].answered || {})[pid] | 0);
+  const min = Math.min(...ms.map((m) => cnt(m.pid)));
+  return ms.filter((m) => cnt(m.pid) === min);
+}
+function isCaptain(pid, tid) { return teams()[tid] && teams()[tid].captain === pid; }
+const ACTIONS = {
+  shooter(a) {
+    const s = st(); if (s.phase !== "turn" || !isCaptain(a.by, s.turnTeam)) return;
+    if (!eligibleShooters(s.turnTeam).some((m) => m.pid === a.pid)) return;
+    E.setShooter(a.pid);
+  },
+  spin(a) {
+    const s = st(); if (s.phase !== "spin" || a.by !== s.shooter || (s.spin && s.spin.status !== "idle")) return;
+    if (!QUESTIONS[a.terr]) return;
+    E.doSpin(a.terr);
+  },
+  final(a) {
+    const s = st(); if (s.phase !== "question" || !s.q || a.by !== s.shooter) return;
+    net.set("answers/" + s.q.qid, { v: a.v, t: a.t, by: a.by });
+    S.answers = { ...(S.answers || {}), [s.q.qid]: { v: a.v } };
+    E.reveal();
+  },
+  bet(a) {
+    const s = st(); if (s.phase !== "question" || !s.q) return;
+    const p = players()[a.by]; if (!p) return; const tid = p.team;
+    if (!isCaptain(a.by, tid) || tid === s.turnTeam) return;
+    if (!CFG.BET_AMTS.includes(a.amt) || !["za", "pr"].includes(a.dir)) return;
+    if (((S.bets || {})[s.q.qid] || {})[tid]) return;
+    if ((teams()[tid].cash | 0) < a.amt) return;
+    net.set("bets/" + s.q.qid + "/" + tid, { dir: a.dir, amt: a.amt, by: a.by });
+    E.applyMoney(tid, -a.amt, false, `💸 «${teams()[tid].name}» ставить ${money(a.amt)} ${a.dir === "za" ? "ЗА" : "ПРОТИ"}`);
+  },
+  nada(a) { const rd = st().revealData; if (rd && isCaptain(a.by, rd.team)) E.nada(rd.team); },
+  payDebt(a) { const p = players()[a.by]; if (p && isCaptain(a.by, p.team)) E.payDebt(p.team); },
+};
+const doneActions = new Set();
+function processActions(acts) {
+  if (!acts || !SEC || !engineIsMine()) return;
+  const list = Object.entries(acts).sort((x, y) => (x[1].t || 0) - (y[1].t || 0));
+  for (const [k, a] of list) {
+    if (doneActions.has(k)) continue; doneActions.add(k);
+    try { if (ACTIONS[a.type]) ACTIONS[a.type](a); } catch (e) { console.error(e); }
+    net.set("actions/" + k, null);
+  }
+}
+// захист від двох відкритих пультів: «рушій» лише в одній вкладці
+const ENGINE_ID = "e" + Math.random().toString(36).slice(2, 9);
+function engineIsMine() { const l = st().engine; return !!(l && l.id === ENGINE_ID); }
+function engineHeartbeat() {
+  if (!SEC) return;
+  const l = st().engine;
+  if (!l || l.id === ENGINE_ID || net.now() - (l.ts || 0) > 8000) net.set("state/engine", { id: ENGINE_ID, ts: net.now() });
+}
+
+// ============================================================
 // ДВИЖОК (виконується ЛИШЕ у вкладці admin)
 // ============================================================
 const E = {
   async newGame() {
     if (!(await uiConfirm("Почати нову гру? Гроші, бали й усі приєднані студенти обнуляться — їм доведеться зайти знову.", "Почати нову гру"))) return;
-    const init = { state: { phase: "lobby", round: 0, usedQ: {}, turnsTaken: {} }, teams: {}, players: null, votes: null, answers: null, bets: null, influence: null, journal: null, log: null, nada: null };
+    const init = { state: { phase: "lobby", round: 0, usedQ: {}, turnsTaken: {}, engine: st().engine || null }, teams: {}, players: null, votes: null, answers: null, shadow: null, bets: null, influence: null, journal: null, log: null, actions: null };
     for (const d of TEAM_DEFS) init.teams[d.id] = { name: d.name, cash: CFG.START_CASH, dirty: 0, debt: 0, silenced: {} };
     net.set("", init);
   },
   startRound(r) {
     if (!activeTids().length) { uiToast("Ще ніхто не приєднався. Покажіть студентам QR-код на проєкторі й дочекайтеся команд."); return; }
     net.set("state/turnsTaken/" + r, null); // повторний запуск раунду — з чистого аркуша
-    const upd = { "state/phase": "turn", "state/round": r, "state/turnTeam": null, "state/q": null, "state/spin": null, "state/revealData": null, "state/event": null };
-    // омерта знімається на початку раунду (silenced зберігає номер раунду)
-    net.update("", upd);
+    net.update("", { "state/phase": "turn", "state/round": r, "state/turnTeam": null, "state/q": null, "state/spin": null, "state/revealData": null, "state/event": null });
     log(`— РАУНД ${r} —`);
     E.nextTurn(r);
   },
@@ -194,42 +269,41 @@ const E = {
     r = r || st().round;
     const taken = (st().turnsTaken || {})[r] || {};
     const cand = activeTids().filter((t) => !taken[t]);
-    if (!cand.length) { net.update("state", { phase: "between", turnTeam: null, q: null, spin: null }); log("Раунд завершено. Час подій Хефи!"); return; }
+    if (!cand.length) { net.update("state", { phase: "between", turnTeam: null, q: null, spin: null }); log("Раунд завершено."); return; }
     cand.sort((a, b) => netWorth(teams()[a]) - netWorth(teams()[b])); // найбідніший ходить першим
     net.update("state", { phase: "turn", turnTeam: cand[0], shooter: null, q: null, spin: null, revealData: null, event: null });
-    log(`Хід картелю «${teams()[cand[0]].name}»`);
+    log(`Хід команди «${teams()[cand[0]].name}»`);
   },
   setShooter(pid) {
     net.update("state", { shooter: pid, phase: "spin", spin: { status: "idle" } });
   },
+  countAnswer(tid, pid) {
+    if (!pid) return;
+    net.set("teams/" + tid + "/answered/" + pid, (((teams()[tid].answered || {})[pid]) | 0) + 1);
+    net.set("teams/" + tid + "/silenced/" + pid, st().round);
+  },
   doSpin(terr) {
-    // 6 гнізд: 1 холостий, 2 легкі, 2 середні, 1 смертельне
     const idx = Math.floor(Math.random() * 6);
     const result = CHAMBERS[idx];
-    net.update("state", { terr, spin: { status: "spinning", idx, result: null, ts: Date.now() } });
+    // питання обираємо одразу: якщо тема вичерпана — не крутимо
+    const q = result === "blank" ? null : E.pickQuestion(terr, result);
+    if (result !== "blank" && !q) { log("У цій темі питання закінчились — оберіть іншу"); return; }
+    net.update("state", { terr, spin: { status: "spinning", idx, result: null, ts: net.now() } });
     setTimeout(() => {
-      const s = st();
-      const tid = s.turnTeam;
-      if (result === "blank") {
-        net.update("state", { spin: { status: "done", idx, result: "blank", ts: Date.now() } });
-        setTimeout(() => {
-          E.applyMoney(tid, CFG.BLANK_REWARD, false, `⚪ Холостий! «${teams()[tid].name}» забирає ${money(CFG.BLANK_REWARD)} без питання`);
+      const tid = st().turnTeam;
+      net.update("state", { spin: { status: "done", idx, result, ts: net.now() } });
+      setTimeout(() => {
+        if (result === "blank") {
+          E.applyMoney(tid, CFG.BLANK_REWARD, false, `⚪ Холосте! «${teams()[tid].name}» забирає ${money(CFG.BLANK_REWARD)} без питання`);
+          E.countAnswer(tid, st().shooter);
           E.markTurnDone(tid);
-          net.update("state", { phase: "turn_end", revealData: { ok: 1, blank: true, delta: CFG.BLANK_REWARD, team: tid, ts: Date.now() } });
-        }, 2200);
-      } else {
-        const q = E.pickQuestion(terr, result);
-        if (!q) { log("Питання вичерпано, оберіть іншу територію"); net.update("state", { phase: "spin", spin: { status: "idle" } }); return; }
-        net.update("state", { spin: { status: "done", idx, result, ts: Date.now() } });
-        setTimeout(() => {
-          const deadline = Date.now() + (q.type === "oral" ? CFG.Q_TIME.oralPrep : CFG.Q_TIME[result]) * 1000;
-          net.update("", {
-            ["state/usedQ/" + q.id]: true,
-            "state/phase": "question",
-            "state/q": { qid: q.id, terr, level: result, deadline, paused: null, oralReady: false },
-          });
-        }, 2200);
-      }
+          net.update("state", { phase: "turn_end", revealData: { ok: 1, blank: true, delta: CFG.BLANK_REWARD, team: tid, ts: net.now() } });
+        } else {
+          const deadline = net.now() + (q.type === "oral" ? CFG.Q_TIME.oralPrep : CFG.Q_TIME[result]) * 1000;
+          net.update("", { ["state/usedQ/" + q.id]: true, "state/phase": "question",
+            "state/q": { qid: q.id, terr, level: result, deadline, paused: null, oralReady: false } });
+        }
+      }, 2200);
     }, SPIN_MS + 150);
   },
   pickQuestion(terr, level) {
@@ -240,56 +314,51 @@ const E = {
     if (!cand.length) cand = pool;
     return cand.length ? cand[Math.floor(Math.random() * cand.length)] : null;
   },
-  markTurnDone(tid) {
-    const r = st().round;
-    net.set("state/turnsTaken/" + r + "/" + tid, true);
-  },
+  markTurnDone(tid) { net.set("state/turnsTaken/" + st().round + "/" + tid, true); },
   // --- розкриття відповіді і розрахунок ---
   reveal(forcedOk) {
-    const s = st(); if (!s.q) return;
-    const q = qById(s.q.qid); const tid = s.turnTeam; const t = teams()[tid];
-    let f;
-    if (q.type === "oral") f = forcedOk ? 1 : 0;
-    else {
-      const ans = ((S.answers || {})[q.id] || {}).v;
-      f = scoreAnswer(q, ans);
-    }
+    const s = st(); if (!s.q || !SEC) return;
+    const q = qById(s.q.qid); const sec = secQ(q.id); const tid = s.turnTeam; const t = teams()[tid];
+    const f = q.type === "oral" ? (forcedOk ? 1 : 0) : scoreAnswer(q, sec, ((S.answers || {})[q.id] || {}).v);
     const rw = CFG.REWARD[s.q.level];
-    let delta = 0, dirty = false, txt;
-    if (f >= 0.999) { delta = rw.win; dirty = s.q.level === "deadly"; txt = `✅ Повна відповідь: +${money(delta)}${dirty ? " (брудні)" : ""}`; }
-    else if (f >= 0.5) { delta = Math.round(rw.win / 2); txt = `🟡 Часткова відповідь (${Math.round(f * 100)}%): +${money(delta)}`; }
+    let delta = 0, dirty = false, txt, doubled = false;
+    if (f >= 0.999) {
+      delta = rw.win;
+      if ((s.doubleNext || {})[tid]) { delta *= 2; doubled = true; net.set("state/doubleNext/" + tid, null); }
+      dirty = s.q.level === "deadly";
+      txt = `✅ Повна відповідь: +${money(delta)}${doubled ? " (×2, El Tren)" : ""}${dirty ? " (брудні)" : ""}`;
+    } else if (f >= 0.5) { delta = Math.round(rw.win / 2); txt = `🟡 Часткова відповідь (${Math.round(f * 100)}%): +${money(delta)}`; }
     else { delta = -rw.lose; txt = `❌ Провал: −${money(rw.lose)}`; }
     E.applyMoney(tid, delta, dirty, `«${t.name}»: ${txt}`);
-    // вплив на територію
     if (f >= 0.999) net.set("influence/" + s.terr + "/" + tid, (((S.influence || {})[s.terr] || {})[tid] | 0) + 1);
-    // омерта для стрільця
-    if (s.shooter) net.set("teams/" + tid + "/silenced/" + s.shooter, s.round);
-    // ставки інших картелів
+    E.countAnswer(tid, s.shooter);
+    // ставки: гроші вже списані при ставці; виграш повертає ставку + прибуток
     const bets = (S.bets || {})[q.id] || {};
+    const partial = f >= 0.5 && f < 0.999;
     for (const btid in bets) {
       const b = bets[btid]; const bt = teams()[btid]; if (!bt) continue;
-      if (f >= 0.5 && f < 0.999 && q.type !== "single") { log(`«${bt.name}»: ставку повернуто (часткова відповідь)`); continue; }
-      const success = f >= 0.5;
-      if (b.dir === "za") {
-        if (success) E.applyMoney(btid, Math.round(b.amt * 0.8), false, `«${bt.name}» вірили — +${money(Math.round(b.amt * 0.8))}`);
-        else E.applyMoney(btid, -b.amt, false, `«${bt.name}» вірили даремно — −${money(b.amt)}`);
-      } else {
-        if (!success) E.applyMoney(btid, b.amt, false, `«${bt.name}» ставили проти — +${money(b.amt)}`);
-        else E.applyMoney(btid, -b.amt, false, `«${bt.name}» ставили проти та програли — −${money(b.amt)}`);
+      if (partial) { E.applyMoney(btid, b.amt, false, `«${bt.name}»: часткова відповідь — ставку ${money(b.amt)} повернуто`); continue; }
+      const success = f >= 0.999;
+      const won = (b.dir === "za") === success;
+      if (won) { const pay = b.dir === "za" ? Math.round(b.amt * 1.8) : b.amt * 2; E.applyMoney(btid, pay, false, `«${bt.name}» вгадали — ${money(pay)} (ставка + прибуток)`); }
+      else log(`«${bt.name}» не вгадали — ставка ${money(b.amt)} згоріла`);
+    }
+    // журнал: порадники, відповідач і тіньові відповіді
+    const shadowStat = { ok: 0, n: 0 };
+    if (q.type !== "oral") {
+      const votes = (S.votes || {})[q.id] || {};
+      for (const pid in votes) net.set("journal/" + pid + "/" + q.id, { ok: scoreAnswer(q, sec, votes[pid].v), terr: s.terr, lvl: s.q.level, kind: "advice" });
+      if (s.shooter) net.set("journal/" + s.shooter + "/" + q.id, { ok: f, terr: s.terr, lvl: s.q.level, kind: "turn" });
+      const sh = (S.shadow || {})[q.id] || {};
+      for (const pid in sh) {
+        const sf = scoreAnswer(q, sec, sh[pid].v);
+        shadowStat.n++; if (sf >= 0.999) shadowStat.ok++;
+        net.set("journal/" + pid + "/" + q.id, { ok: sf, terr: s.terr, lvl: s.q.level, kind: "shadow" });
       }
-    }
-    // журнал: особисті голоси всіх, хто голосував
-    const votes = (S.votes || {})[q.id] || {};
-    for (const pid in votes) {
-      if (q.type === "oral") continue;
-      net.set("journal/" + pid + "/" + q.id, { ok: scoreAnswer(q, votes[pid].v), terr: s.terr, lvl: s.q.level });
-    }
-    if (s.shooter && q.type !== "oral") {
-      const ans = ((S.answers || {})[q.id] || {}).v;
-      net.set("journal/" + s.shooter + "/" + q.id, { ok: f, terr: s.terr, lvl: s.q.level, shooter: true });
-    }
+    } else if (s.shooter) net.set("journal/" + s.shooter + "/" + q.id, { ok: f, terr: s.terr, lvl: s.q.level, kind: "oral" });
     E.markTurnDone(tid);
-    net.update("state", { phase: "turn_end", q: null, revealData: { ok: f, qid: q.id, delta, team: tid, dirty, ts: Date.now(), canNada: f >= 0.999 && delta > 0 } });
+    net.update("state", { phase: "turn_end", q: null, revealData: { ok: f, qid: q.id, delta, team: tid, dirty, doubled, ts: net.now(),
+      canNada: f >= 0.999 && delta > 0, answer: q.type === "oral" ? "" : answerText(q, sec, false), expl: sec.expl || "", shadow: shadowStat } });
   },
   applyMoney(tid, delta, dirty, msg) {
     const t = teams()[tid]; if (!t) return;
@@ -298,7 +367,6 @@ const E = {
       let cash = (t.cash | 0) + delta;
       if (cash < 0) cash = 0;
       net.set("teams/" + tid + "/cash", cash);
-      // санація
       if (cash < CFG.BAILOUT_AT && !t.debt) {
         net.update("teams/" + tid, { cash: cash + CFG.BAILOUT_GIVE, debt: CFG.BAILOUT_DEBT });
         log(`🏦 Санація: «${t.name}» отримує кризовий кредит ${money(CFG.BAILOUT_GIVE)}, борг ${money(CFG.BAILOUT_DEBT)}`);
@@ -316,33 +384,26 @@ const E = {
   // --- Все або нічого ---
   nada(tid) {
     const rd = st().revealData; if (!rd || rd.team !== tid || !rd.canNada) return;
-    const win = Math.random() < 0.5;
-    const t = teams()[tid];
-    const amt = rd.delta;
-    if (win) E.applyMoney(tid, rd.dirty ? 0 : amt, rd.dirty, `🪙 ВСЕ АБО НІЧОГО: «${t.name}» подвоюють! +${money(amt)}`);
-    else {
-      if (rd.dirty) net.set("teams/" + tid + "/dirty", Math.max(0, (t.dirty | 0) - amt));
-      else net.set("teams/" + tid + "/cash", Math.max(0, (t.cash | 0) - amt));
-      log(`🪙 ВСЕ АБО НІЧОГО: «${t.name}» втрачають виграш −${money(amt)}`);
-    }
-    if (win && rd.dirty) net.set("teams/" + tid + "/dirty", (teams()[tid].dirty | 0) + amt);
-    net.update("state", { revealData: { ...rd, canNada: false, nada: { win, ts: Date.now() } } });
+    const win = Math.random() < 0.5; const t = teams()[tid]; const amt = rd.delta;
+    const field = rd.dirty ? "dirty" : "cash";
+    net.set("teams/" + tid + "/" + field, Math.max(0, (t[field] | 0) + (win ? amt : -amt)));
+    log(win ? `🪙 Все або нічого: «${t.name}» подвоюють! +${money(amt)}` : `🪙 Все або нічого: «${t.name}» втрачають виграш −${money(amt)}`);
+    net.update("state", { revealData: { ...rd, canNada: false, nada: { win, ts: net.now() } } });
   },
   // --- Облава ---
   startRaid() {
-    const q = RAID_POOL[Math.floor(Math.random() * RAID_POOL.length)];
-    net.update("state", { phase: "raid", event: { kind: "raid", q: q.q, a: q.a, expl: q.expl || "", deadline: Date.now() + CFG.RAID_TIME * 1000, id: "raid" + Date.now() }, prevPhase: st().phase });
+    const qi = Math.floor(Math.random() * RAID_POOL.length);
     net.set("raidVotes", null);
-    log("🚔 ОБЛАВА! 30 секунд на відповідь кожному!");
+    net.update("state", { phase: "raid", event: { kind: "raid", qi, deadline: net.now() + CFG.RAID_TIME * 1000, id: "raid" + net.now() } });
+    log("🚔 Облава! 30 секунд на відповідь кожному!");
   },
   endRaid() {
-    const ev = st().event; if (!ev || ev.kind !== "raid") return;
-    const rv = S.raidVotes || {};
+    const ev = st().event; if (!ev || ev.kind !== "raid" || !SEC) return;
+    const ans = SEC.raid[ev.qi].a; const rv = S.raidVotes || {};
     const perTeam = {};
     for (const pid in players()) {
       const p = players()[pid]; if (!p.team) continue;
-      const v = rv[pid];
-      const ok = v != null && v === ev.a;
+      const ok = rv[pid] === ans;
       perTeam[p.team] = perTeam[p.team] || { ok: 0, bad: 0 };
       ok ? perTeam[p.team].ok++ : perTeam[p.team].bad++;
     }
@@ -350,15 +411,14 @@ const E = {
       const d = perTeam[tid].ok * CFG.RAID_OK - perTeam[tid].bad * CFG.RAID_BAD;
       E.applyMoney(tid, d, false, `🚔 «${teams()[tid].name}»: ${perTeam[tid].ok}✓/${perTeam[tid].bad}✗ → ${d >= 0 ? "+" : ""}${money(d)}`);
     }
-    net.update("state", { phase: "between", event: { kind: "raid_result", a: ev.a, expl: ev.expl, perTeam, ts: Date.now() } });
+    net.update("state", { phase: "between", event: { kind: "raid_result", qi: ev.qi, a: ans, expl: SEC.raid[ev.qi].expl, perTeam, ts: net.now() } });
   },
   // --- Лотерея ---
   loteria() {
     const c = LOTERIA_CARDS[Math.floor(Math.random() * LOTERIA_CARDS.length)];
-    net.update("state", { event: { kind: "loteria", card: c, ts: Date.now() } });
+    net.update("state", { event: { kind: "loteria", card: c, ts: net.now() } });
     log(`🎴 Лотерея: ${c.icon} ${c.name} — ${c.text}`);
-    const ts = teams();
-    const ids = activeTids();
+    const ts = teams(); const ids = activeTids();
     const sorted = [...ids].sort((a, b) => netWorth(ts[b]) - netWorth(ts[a]));
     if (c.name === "El Dinero") for (const tid of ids) if (!ts[tid].debt) E.applyMoney(tid, 800, false, null);
     if (c.name === "La Muerte" && sorted[0]) E.applyMoney(sorted[0], -Math.round(ts[sorted[0]].cash * 0.1), false, null);
@@ -366,111 +426,97 @@ const E = {
     if (c.name === "El Sol" && sorted.length) E.applyMoney(sorted[sorted.length - 1], 1200, false, null);
     if (c.name === "El Banco") for (const tid of ids) if (ts[tid].dirty) { E.applyMoney(tid, ts[tid].dirty, false, null); net.set("teams/" + tid + "/dirty", 0); }
     if (c.name === "La Policía") setTimeout(() => E.startRaid(), 3500);
-    if (c.name === "El Tren") net.set("state/doubleNext", true);
-    // La Corona — вручну: Хефа сама проводить обмін кнопками ±
+    if (c.name === "El Tren") { const d = {}; for (const tid of ids) d[tid] = true; net.set("state/doubleNext", d); }
+    if (c.name === "La Corona" && sorted.length > 1) {
+      const lead = sorted[0], last = sorted[sorted.length - 1]; const amt = Math.min(500, ts[lead].cash | 0);
+      E.applyMoney(lead, -amt, false, null); E.applyMoney(last, amt, false, `👑 «${ts[lead].name}» віддають ${money(amt)} команді «${ts[last].name}»`);
+    }
   },
   // --- Дуель ---
   startDuel(t1, t2) {
     const used = st().usedDuel || {};
     const pool = DUEL_POOL.map((q, i) => i).filter((i) => !used[i]);
-    if (!pool.length) { log("Дуельні питання вичерпано"); return; }
+    if (!pool.length) { uiToast("Дуельні питання вичерпано"); return; }
     const qi = pool[Math.floor(Math.random() * pool.length)];
     net.set("duelAns", null);
-    net.update("state", {
-      phase: "duel", ["usedDuel/" + qi]: true,
-      event: { kind: "duel", qi, t1, t2, deadline: Date.now() + 20000, id: "duel" + Date.now() },
-    });
-    log(`⚔️ ДУЕЛЬ: «${teams()[t1].name}» проти «${teams()[t2].name}»!`);
+    net.update("state", { phase: "duel", ["usedDuel/" + qi]: true, event: { kind: "duel", qi, t1, t2, deadline: net.now() + 20000, id: "duel" + net.now() } });
+    log(`⚔️ Дуель: «${teams()[t1].name}» проти «${teams()[t2].name}»!`);
   },
   endDuel() {
-    const ev = st().event; if (!ev || ev.kind !== "duel") return;
-    const q = DUEL_POOL[ev.qi];
-    const da = S.duelAns || {};
+    const ev = st().event; if (!ev || ev.kind !== "duel" || !SEC) return;
+    const correct = SEC.duel[ev.qi].correct; const da = S.duelAns || {};
     let winner = null, best = Infinity;
-    for (const tid of [ev.t1, ev.t2]) {
-      const a = da[tid];
-      if (a && a.v === q.correct && a.t < best) { best = a.t; winner = tid; }
-    }
+    for (const tid of [ev.t1, ev.t2]) { const a = da[tid]; if (a && a.v === correct && a.t < best) { best = a.t; winner = tid; } }
     if (winner) {
       const loser = winner === ev.t1 ? ev.t2 : ev.t1;
       const prize = Math.min(CFG.DUEL_PRIZE, teams()[loser].cash | 0);
       E.applyMoney(loser, -prize, false, null);
       E.applyMoney(winner, prize, false, `⚔️ «${teams()[winner].name}» виграли дуель: +${money(prize)} від суперника`);
-    } else log("⚔️ Дуель без переможця — обидва промахнулися");
-    net.update("state", { phase: "between", event: { kind: "duel_result", winner, correct: q.opts[q.correct], ts: Date.now() } });
+    } else log("⚔️ Дуель без переможця — обидві команди промахнулися");
+    net.update("state", { phase: "between", event: { kind: "duel_result", winner, correct: DUEL_POOL[ev.qi].opts[correct], ts: net.now() } });
   },
   // --- Відмивання ---
   startLavado() {
     const dirtyTeams = activeTids().filter((tid) => (teams()[tid].dirty | 0) > 0);
-    if (!dirtyTeams.length) { log("Брудних грошей ні в кого немає"); return; }
+    if (!dirtyTeams.length) { uiToast("Брудних грошей зараз ні в кого немає"); return; }
     const used = st().usedLavado || {};
     const pool = LAVADO_POOL.map((q, i) => i).filter((i) => !used[i]);
     const qi = pool.length ? pool[Math.floor(Math.random() * pool.length)] : Math.floor(Math.random() * LAVADO_POOL.length);
     net.set("lavAns", null);
-    net.update("state", {
-      phase: "lavado", ["usedLavado/" + qi]: true,
-      event: { kind: "lavado", qi, teams: dirtyTeams, deadline: Date.now() + 90000, id: "lav" + Date.now() },
-    });
-    log("🧺 ВІДМИВАННЯ: картелі з брудними грошима виконують завдання!");
+    net.update("state", { phase: "lavado", ["usedLavado/" + qi]: true, event: { kind: "lavado", qi, teams: dirtyTeams, deadline: net.now() + 90000, id: "lav" + net.now() } });
+    log("🧺 Відмивання: команди з брудними грошима виконують завдання!");
   },
   endLavado() {
-    const ev = st().event; if (!ev || ev.kind !== "lavado") return;
-    const q = LAVADO_POOL[ev.qi];
-    const la = S.lavAns || {};
-    const res = {};
+    const ev = st().event; if (!ev || ev.kind !== "lavado" || !SEC) return;
+    const q = LAVADO_POOL[ev.qi]; const sec = SEC.lav[ev.qi]; const la = S.lavAns || {}; const res = {};
     for (const tid of ev.teams) {
       const t = teams()[tid];
-      const f = scoreAnswer(q, (la[tid] || {}).v);
+      const f = scoreAnswer(q, sec, (la[tid] || {}).v);
       if (f >= 0.999) { E.applyMoney(tid, t.dirty, false, `🧺 «${t.name}» відмили ${money(t.dirty)}!`); net.set("teams/" + tid + "/dirty", 0); res[tid] = "ok"; }
       else { const lost = Math.round(t.dirty / 2); net.set("teams/" + tid + "/dirty", t.dirty - lost); log(`🧺 «${t.name}» спалилися: конфісковано ${money(lost)}`); res[tid] = "fail"; }
     }
-    net.update("state", { phase: "between", event: { kind: "lavado_result", res, expl: q.expl, ts: Date.now() } });
+    net.update("state", { phase: "between", event: { kind: "lavado_result", res, answer: answerText(q, sec, false), expl: sec.expl, ts: net.now() } });
   },
   // --- Фінал ---
   final() {
-    const inf = S.influence || {};
-    const terrOwner = {};
-    for (const t of TERRITORIES) {
-      let best = null, bv = 0;
-      for (const tid in inf[t.id] || {}) if (inf[t.id][tid] > bv) { bv = inf[t.id][tid]; best = tid; }
-      terrOwner[t.id] = best;
-    }
+    const inf = S.influence || {}; const terrOwner = {};
+    for (const t of TERRITORIES) { let best = null, bv = 0; for (const tid in inf[t.id] || {}) if (inf[t.id][tid] > bv) { bv = inf[t.id][tid]; best = tid; } terrOwner[t.id] = best; }
     const rows = activeTids().map((tid) => {
-      const t = teams()[tid];
-      const terrs = Object.keys(terrOwner).filter((k) => terrOwner[k] === tid);
+      const t = teams()[tid]; const terrs = Object.keys(terrOwner).filter((k) => terrOwner[k] === tid);
       const total = (t.cash | 0) - (t.debt | 0) + terrs.length * CFG.TERR_BONUS; // брудні гроші у фінал НЕ йдуть
       return { tid, name: t.name, cash: t.cash | 0, dirty: t.dirty | 0, debt: t.debt | 0, terrs, total };
     }).sort((a, b) => b.total - a.total);
-    net.update("state", { phase: "final", event: null, finalData: { rows, terrOwner, ts: Date.now() } });
+    net.update("state", { phase: "final", event: null, finalData: { rows, terrOwner, ts: net.now() } });
     log(`👑 Фінал! Переможець — «${rows[0] ? rows[0].name : "?"}»`);
   },
-  // --- CSV ---
+  // --- Таблиця оцінок (табуляція — вставляється в Excel і Google Таблиці по колонках) ---
   exportPlayers() {
-    const jl = S.journal || {};
-    let csv = "Студент;Команда;Відповідей;Правильно;Точність %;" + TERRITORIES.map((t) => t.sub.split(" · ")[0]).join(";") + "\n";
+    const jl = S.journal || {}; const T = "\t";
+    const head = ["Студент", "Команда", "Відповідав за команду", "Тіньові відповіді", "Поради команді", "Усього завдань", "Точність %", ...TERRITORIES.map((t) => t.sub.split(" · ")[0])];
+    const rows = [head.join(T)];
     for (const pid in players()) {
-      const p = players()[pid];
-      const j = jl[pid] || {};
-      let n = 0, ok = 0; const per = { t1: [0, 0], t2: [0, 0], t3: [0, 0], t4: [0, 0] };
-      for (const qid in j) { n++; ok += j[qid].ok; per[j[qid].terr][0] += j[qid].ok; per[j[qid].terr][1]++; }
-      csv += `${p.name};${(teams()[p.team] || {}).name || "—"};${n};${ok.toFixed(1)};${n ? Math.round((ok / n) * 100) : 0};` +
-        TERRITORIES.map((t) => per[t.id][1] ? Math.round((per[t.id][0] / per[t.id][1]) * 100) + "%" : "—").join(";") + "\n";
+      const p = players()[pid]; const j = jl[pid] || {};
+      let n = 0, ok = 0; const kinds = { turn: 0, oral: 0, shadow: 0, advice: 0 }; const per = { t1: [0, 0], t2: [0, 0], t3: [0, 0], t4: [0, 0] };
+      for (const qid in j) { const e = j[qid]; n++; ok += e.ok; kinds[e.kind || "turn"] = (kinds[e.kind || "turn"] | 0) + 1; if (per[e.terr]) { per[e.terr][0] += e.ok; per[e.terr][1]++; } }
+      rows.push([p.name, (teams()[p.team] || {}).name || "—", kinds.turn + kinds.oral, kinds.shadow, kinds.advice, n, n ? Math.round((ok / n) * 100) : 0,
+        ...TERRITORIES.map((t) => per[t.id][1] ? Math.round((per[t.id][0] / per[t.id][1]) * 100) : "")].join(T));
     }
-    navigator.clipboard.writeText(csv).then(() => uiToast("Таблицю скопійовано. Вставте її в Excel або Google Таблиці."), () => uiToast("Не вдалося скопіювати. Дозвольте браузеру доступ до буфера обміну."));
+    navigator.clipboard.writeText(rows.join("\n")).then(() => uiToast("Таблицю скопійовано. Вставте її в Excel або Google Таблиці (Ctrl+V)."), () => uiToast("Не вдалося скопіювати. Дозвольте браузеру доступ до буфера обміну."));
   },
 };
 
-// авто-таймери (лише admin)
-if (ROLE === "admin") setInterval(() => {
-  const s = st(); const now = Date.now();
-  if (s.phase === "question" && s.q && !s.q.paused && s.q.deadline && now > s.q.deadline) {
-    const q = qById(s.q.qid);
-    if (q.type !== "oral") E.reveal();
-  }
-  if (s.phase === "raid" && s.event && now > s.event.deadline) E.endRaid();
-  if (s.phase === "duel" && s.event && now > s.event.deadline) E.endDuel();
-  if (s.phase === "lavado" && s.event && now > s.event.deadline) E.endLavado();
-}, 700);
+// авто-таймери, дії з телефонів і «пульс» рушія (лише пульт)
+if (ROLE === "admin") {
+  setInterval(() => {
+    engineHeartbeat();
+    if (!SEC || !engineIsMine()) return;
+    const s = st(); const now = net.now();
+    if (s.phase === "question" && s.q && !s.q.paused && s.q.deadline && now > s.q.deadline) { const q = qById(s.q.qid); if (q.type !== "oral") E.reveal(); }
+    if (s.phase === "raid" && s.event && now > s.event.deadline) E.endRaid();
+    if (s.phase === "duel" && s.event && now > s.event.deadline) E.endDuel();
+    if (s.phase === "lavado" && s.event && now > s.event.deadline) E.endLavado();
+  }, 700);
+}
 
 // ============================================================
 // РЕНДЕР
@@ -478,7 +524,7 @@ if (ROLE === "admin") setInterval(() => {
 let unsub = null;
 function boot() {
   document.body.dataset.role = ROLE;
-  unsub = net.onValue("", (data) => { S = data || {}; render(); soundFromState(); });
+  unsub = net.onValue("", (data) => { S = data || {}; render(); if (ROLE === "projector") soundFromState(); if (ROLE === "admin") processActions(S.actions); });
   document.addEventListener("click", () => { if (!audio && AC) try { audio = new AC(); } catch (e) {} }, { once: true });
   if (ROLE === "projector") setInterval(renderTimerOnly, 500);
   if (ROLE === "play") setInterval(renderTimerOnly, 500);
@@ -490,7 +536,7 @@ function renderTimerOnly() {
   if (s.phase === "question" && s.q) dl = s.q.paused ? null : s.q.deadline;
   if (s.event && s.event.deadline && ["raid", "duel", "lavado"].includes(s.phase)) dl = s.event.deadline;
   if (!dl) { t.textContent = s.q && s.q.paused ? "⏸" : ""; return; }
-  const left = Math.max(0, Math.ceil((dl - Date.now()) / 1000));
+  const left = Math.max(0, Math.ceil((dl - net.now()) / 1000));
   t.textContent = "⏱ " + left + " с";
   t.classList.toggle("danger", left <= 10);
   if (left <= 5 && left > 0 && ROLE === "projector") snd("tick");
@@ -566,7 +612,7 @@ function barrelHTML() {
   const idx = sp.idx | 0;
   const result = done ? sp.result : null;
   const target = 360 * 6 + ((360 - idx * 60) % 360); // гніздо idx зупиняється під бойком угорі
-  const elapsed = spinning ? Math.max(0, Date.now() - (sp.ts || Date.now())) : 0;
+  const elapsed = spinning ? Math.max(0, net.now() - (sp.ts || net.now())) : 0;
   const COL = { blank: "#FFF3DC", easy: "#2FBF71", mid: "#FFA41B", deadly: "#E5007D" };
   const chambers = CHAMBERS.map((k, i) => {
     const a = (i * 60 - 90) * Math.PI / 180;
@@ -614,15 +660,15 @@ function questionBodyHTML(q, forRole, myAnswer) {
       ${forRole === "view" ? "" : `<span class="order-btns"><button class="ob" data-pos="${pos}" data-dir="-1">▲</button><button class="ob" data-pos="${pos}" data-dir="1">▼</button></span>`}</div>`).join("") + `</div>`;
   }
   if (q.type === "match") {
-    const sel = Array.isArray(myAnswer) ? myAnswer : q.pairs.map(() => null);
-    inner = `<div class="match-list">` + q.pairs.map((p, i) => `
-      <div class="match-row"><div class="match-left">${esc(p[0])}</div>
-      <select class="match-sel" data-i="${i}" ${dis}><option value="">— обери —</option>${q.pairs.map((pp, j) => `<option value="${j}" ${sel[i] === j ? "selected" : ""}>${esc(pp[1])}</option>`).join("")}</select></div>`).join("") + `</div>`;
+    const sel = Array.isArray(myAnswer) ? myAnswer : q.left.map(() => null);
+    inner = `<div class="match-list">` + q.left.map((l, i) => `
+      <div class="match-row"><div class="match-left">${esc(l)}</div>
+      <select class="match-sel" data-i="${i}" ${dis}><option value="">— обери —</option>${q.right.map((r, j) => `<option value="${j}" ${sel[i] === j ? "selected" : ""}>${esc(r)}</option>`).join("")}</select></div>`).join("") + `</div>`;
   }
   if (q.type === "sort2") {
     const sel = Array.isArray(myAnswer) ? myAnswer : q.items.map(() => null);
     inner = `<div class="sort2-head"><span>A: ${esc(q.colA)}</span><span>B: ${esc(q.colB)}</span></div><div class="sort2-list">` + q.items.map((it, i) => `
-      <div class="sort2-row"><span>${esc(it[0])}</span><span class="s2btns">
+      <div class="sort2-row"><span>${esc(it)}</span><span class="s2btns">
       <button class="s2 ${sel[i] === "A" ? "sel" : ""}" data-i="${i}" data-v="A" ${dis}>A</button>
       <button class="s2 ${sel[i] === "B" ? "sel" : ""}" data-i="${i}" data-v="B" ${dis}>B</button></span></div>`).join("") + `</div>`;
   }
@@ -685,10 +731,12 @@ function renderProjector(app) {
         <div class="reveal-big">${rd.blank ? "⚪ ХОЛОСТИЙ!" : rd.ok >= 0.999 ? "✅ ПРАВИЛЬНО!" : rd.ok >= 0.5 ? "🟡 ЧАСТКОВО (" + Math.round(rd.ok * 100) + "%)" : "💥 ПРОВАЛ!"}</div>
         <div class="reveal-delta">${rd.delta >= 0 ? "+" : ""}${money(rd.delta)}${rd.dirty ? " 🧺 (треба відмити!)" : ""}</div>
         ${rd.nada ? `<div class="nada-res">🪙 Все або нічого: ${rd.nada.win ? "ПОДВОЄННЯ!" : "ВСЕ ЗГОРІЛО!"}</div>` : ""}
-        ${q && q.expl ? `<div class="reveal-expl">${esc(q.expl)}</div>` : ""}
+        ${rd.answer ? `<div class="reveal-expl"><b>Правильна відповідь:</b><br>${esc(rd.answer).split("; ").join("<br>")}</div>` : ""}
+        ${rd.expl ? `<div class="reveal-expl">${esc(rd.expl)}</div>` : ""}
+        ${rd.shadow && rd.shadow.n ? `<div class="reveal-expl">👥 Інші команди відповідали «тіньово»: правильно ${rd.shadow.ok} з ${rd.shadow.n}</div>` : ""}
       </div>`;
     }
-    if (s.phase === "raid" && s.event) center = `<div class="raid-card"><div class="raid-head">🚔 ОБЛАВА ПОЛІЦІЇ 🚔</div><div class="q-text">${esc(s.event.q)}</div><div class="raid-sub">Кожен відповідає на СВОЄМУ телефоні: ТАК чи НІ!</div></div>`;
+    if (s.phase === "raid" && s.event) center = `<div class="raid-card"><div class="raid-head">🚔 ОБЛАВА ПОЛІЦІЇ 🚔</div><div class="q-text">${esc(RAID_POOL[s.event.qi].q)}</div><div class="raid-sub">Кожен відповідає на СВОЄМУ телефоні: ТАК чи НІ!</div></div>`;
     if (s.event && s.event.kind === "raid_result") center = `<div class="raid-card done"><div class="raid-head">Облаву завершено</div><div class="q-text">Правильна відповідь: <b>${s.event.a ? "ТАК" : "НІ"}</b></div>${s.event.expl ? `<div class="reveal-expl">${esc(s.event.expl)}</div>` : ""}</div>`;
     if (s.phase === "duel" && s.event) {
       const q = DUEL_POOL[s.event.qi];
@@ -733,7 +781,7 @@ function renderPlay(app) {
       const name = $("#pname").value.trim();
       if (!name) { $("#pname").focus(); return; }
       const tid = b.dataset.t;
-      net.set("players/" + myPid, { name, team: tid, ts: Date.now() });
+      net.set("players/" + myPid, { name, team: tid, ts: net.now() });
       if (!(teams()[tid] || {}).captain) net.set("teams/" + tid + "/captain", myPid);
       snd("click");
     });
@@ -754,9 +802,11 @@ function renderPlay(app) {
   }
   // --- вибір стрільця (тільки капітан, свій хід) ---
   else if (s.phase === "turn" && myTurn && isCap) {
-    const ms = teamMembers(tid).filter((x) => !isSilenced(tid, x.pid));
-    body = `<div class="phase-head">🔫 Обери стрільця</div><div class="dim small">Хто відповів — мовчить до кінця раунду (омерта)</div>
-    <div class="shooter-list">${ms.map((x) => `<button class="btn shooter-btn" data-p="${x.pid}">${esc(x.name)}${x.pid === myPid ? " (я)" : ""}</button>`).join("") || "<div>Усі в омерті! Хефа, пропустіть хід."}</div>`;
+    const ok = new Set(eligibleShooters(tid).map((x) => x.pid));
+    body = `<div class="phase-head">🔫 Хто відповідає?</div><div class="dim small">Відповідають по черзі: поки кожен у команді не відповів, той, хто вже відповідав, чекає.</div>
+    <div class="shooter-list">${teamMembers(tid).map((x) => ok.has(x.pid)
+      ? `<button class="btn shooter-btn" data-p="${x.pid}">${esc(x.name)}${x.pid === myPid ? " (я)" : ""}</button>`
+      : `<button class="btn" disabled>${esc(x.name)} — вже відповідав(ла)</button>`).join("")}</div>`;
   }
   else if (s.phase === "turn" && myTurn) body = `<div class="center-msg">Твій картель ходить!<br><span class="dim">Капітан обирає стрільця…</span></div>`;
   else if (s.phase === "turn") body = `<div class="center-msg">Ходить «${esc((teams()[s.turnTeam] || {}).name || "")}»</div>`;
@@ -790,9 +840,14 @@ function renderPlay(app) {
     } else {
       // ставки інших картелів
       const myBet = ((S.bets || {})[q.id] || {})[tid];
+      const myShadow = ((S.shadow || {})[q.id] || {})[myPid];
       body = `<div class="q-card">
         <div class="q-meta">Відповідає «${esc((teams()[s.turnTeam] || {}).name || "")}»</div>
         <div class="q-text">${esc(q.q)}</div>
+        ${q.type === "oral" ? `<div class="dim">Усне питання — слухайте відповідь команди.</div>` : myShadow
+          ? `<div class="bet-done">👥 Твоя тіньова відповідь прийнята. Результат — після розкриття.</div>`
+          : `<div class="shadow-box"><div class="phase-head">👥 Тіньова відповідь</div><div class="dim small">Відповідай сам — це твої особисті бали в оцінку, гроші команди не змінюються.</div>
+             ${questionBodyHTML(q, "act", draftAnswer)}<button class="btn big" id="sendShadow">Відповісти</button></div>`}
         ${isCap ? (myBet ? `<div class="bet-done">Ставка зроблена: ${myBet.dir === "za" ? "ЗА" : "ПРОТИ"} ${money(myBet.amt)}</div>` :
           `<div class="phase-head">💸 Ставки</div><div class="bet-grid">
             ${CFG.BET_AMTS.map((a) => `<button class="btn bet-btn za" data-dir="za" data-amt="${a}">ЗА +80%<br>${money(a)}</button>`).join("")}
@@ -814,7 +869,7 @@ function renderPlay(app) {
   // --- облава ---
   else if (s.phase === "raid" && s.event) {
     const myV = (S.raidVotes || {})[myPid];
-    body = `<div class="raid-card"><div class="raid-head">🚔 ОБЛАВА</div><div class="q-text">${esc(s.event.q)}</div>
+    body = `<div class="raid-card"><div class="raid-head">🚔 ОБЛАВА</div><div class="q-text">${esc(RAID_POOL[s.event.qi].q)}</div>
     ${myV != null ? `<div class="bet-done">Твоя відповідь: ${myV ? "ТАК" : "НІ"}</div>` : `<div class="yn"><button class="btn big yes" id="rYes">ТАК</button><button class="btn big no" id="rNo">НІ</button></div>`}</div>`;
   }
   // --- дуель ---
@@ -867,8 +922,8 @@ function renderPlay(app) {
     if (isCap) { const rest = teamMembers(tid).filter((x) => x.pid !== myPid); net.set("teams/" + tid + "/captain", rest.length ? rest[0].pid : null); }
   });
   $("#rename") && ($("#rename").onclick = () => { const v = $("#tname").value.trim(); if (v) net.set("teams/" + tid + "/name", v); });
-  $("#payDebt") && ($("#payDebt").onclick = () => E.payDebt(tid));
-  app.querySelectorAll(".shooter-btn").forEach((b) => b.onclick = () => { E.setShooter(b.dataset.p); snd("click"); });
+  $("#payDebt") && ($("#payDebt").onclick = () => act("payDebt"));
+  app.querySelectorAll(".shooter-btn").forEach((b) => b.onclick = () => { act("shooter", { pid: b.dataset.p }); b.disabled = true; snd("click"); });
   // вибір території + спін (стрілець)
   let chosenTerr = null;
   app.querySelectorAll(".terr.clickable").forEach((b) => b.onclick = () => {
@@ -877,36 +932,44 @@ function renderPlay(app) {
     const sb = $("#spinBtn"); if (sb) { sb.disabled = false; $("#spinHint").textContent = "Територія: " + terrDef(chosenTerr).name; }
     snd("click");
   });
-  $("#spinBtn") && ($("#spinBtn").onclick = () => { if (chosenTerr) { E.doSpin(chosenTerr); snd("click"); } });
+  $("#spinBtn") && ($("#spinBtn").onclick = (e) => { if (chosenTerr) { act("spin", { terr: chosenTerr }); e.target.disabled = true; e.target.textContent = "Крутимо…"; snd("click"); } });
   // відповіді
   bindAnswerInputs(app, s);
   $("#submitFinal") && ($("#submitFinal").onclick = () => {
     const q = qById(s.q.qid);
+    if (draftAnswer == null && q.type === "order") draftAnswer = q.items.map((_, i) => i);
     if (draftAnswer == null) { uiToast("Спершу обери відповідь"); return; }
     if (q.type === "multi" && (!Array.isArray(draftAnswer) || draftAnswer.length !== q.need)) { uiToast("Треба обрати рівно " + q.need); return; }
-    net.set("answers/" + q.id, { v: draftAnswer, t: Date.now(), by: myPid });
-    E.reveal();
+    act("final", { v: draftAnswer });
+    $("#submitFinal").disabled = true; $("#submitFinal").textContent = "Відповідь надіслано…";
   });
   $("#sendVote") && ($("#sendVote").onclick = () => {
+    if (draftAnswer == null && qById(s.q.qid).type === "order") draftAnswer = qById(s.q.qid).items.map((_, i) => i);
     if (draftAnswer == null) { uiToast("Спершу обери варіант"); return; }
-    net.set("votes/" + s.q.qid + "/" + myPid, { v: draftAnswer, t: Date.now() });
+    net.set("votes/" + s.q.qid + "/" + myPid, { v: draftAnswer, t: net.now() });
     snd("click");
   });
   $("#oralReady") && ($("#oralReady").onclick = () => net.set("state/q/oralReady", true));
-  $("#nadaBtn") && ($("#nadaBtn").onclick = () => { snd("coin"); E.nada(tid); });
+  $("#nadaBtn") && ($("#nadaBtn").onclick = (e) => { snd("coin"); act("nada"); e.target.disabled = true; });
   app.querySelectorAll(".bet-btn").forEach((b) => b.onclick = () => {
     const amt = +b.dataset.amt;
     if ((t.cash | 0) < amt) { uiToast("Не вистачає готівки на цю ставку"); return; }
-    net.set("bets/" + s.q.qid + "/" + tid, { dir: b.dataset.dir, amt, by: myPid });
-    E.applyMoney(tid, -amt, false, null); // ставка списується одразу, повернення при виграші = ставка+прибуток
+    act("bet", { dir: b.dataset.dir, amt }); b.disabled = true;
     snd("coin");
   });
   $("#rYes") && ($("#rYes").onclick = () => { net.set("raidVotes/" + myPid, true); snd("click"); });
   $("#rNo") && ($("#rNo").onclick = () => { net.set("raidVotes/" + myPid, false); snd("click"); });
-  app.querySelectorAll("[data-duel]").forEach((b) => b.onclick = () => net.set("duelAns/" + tid, { v: +b.dataset.duel, t: Date.now(), by: myPid }));
+  app.querySelectorAll("[data-duel]").forEach((b) => b.onclick = () => net.set("duelAns/" + tid, { v: +b.dataset.duel, t: net.serverTs(), by: myPid }));
+  $("#sendShadow") && ($("#sendShadow").onclick = () => {
+    const q = qById(s.q.qid); let v = draftAnswer;
+    if (v == null && q.type === "order") v = q.items.map((_, i) => i);
+    if (v == null) { uiToast("Спершу обери відповідь"); return; }
+    if (q.type === "multi" && (!Array.isArray(v) || v.length !== q.need)) { uiToast("Треба обрати рівно " + q.need); return; }
+    net.set("shadow/" + q.id + "/" + myPid, { v, t: net.now() }); snd("click");
+  });
   $("#lavSubmit") && ($("#lavSubmit").onclick = () => {
     if (draftAnswer == null) { uiToast("Спершу дай відповідь"); return; }
-    net.set("lavAns/" + tid, { v: draftAnswer, t: Date.now(), by: myPid });
+    net.set("lavAns/" + tid, { v: draftAnswer, t: net.now(), by: myPid });
   });
 }
 
@@ -955,7 +1018,7 @@ function bindAnswerInputs(app, s) {
   });
   app.querySelectorAll(".match-sel").forEach((sel) => sel.onchange = () => {
     const q = getQ();
-    if (!Array.isArray(draftAnswer)) draftAnswer = q.pairs.map(() => null);
+    if (!Array.isArray(draftAnswer)) draftAnswer = q.left.map(() => null);
     draftAnswer[+sel.dataset.i] = sel.value === "" ? null : +sel.value;
   });
   app.querySelectorAll(".s2").forEach((b) => b.onclick = () => {
@@ -969,10 +1032,23 @@ function bindAnswerInputs(app, s) {
 // ---------- ПУЛЬТ ВИКЛАДАЧА ----------
 function renderAdmin(app) {
   const s = st();
+  if (!SEC) {
+    app.innerHTML = `<div class="papel"></div><div class="lock"><h1 class="title-small">Пульт викладача</h1>
+      <p>Тут видно правильні відповіді, тому пульт захищено паролем.</p>
+      <form id="lockForm"><label for="pw">Пароль викладача</label><input id="pw" class="inp" type="password" autocomplete="current-password" required>
+      <button class="btn big" type="submit">Відкрити пульт</button></form></div>`;
+    const tryPass = async (p, silent) => { try { await unlockAnswers(p); try { localStorage.setItem("cartel_pass", p); } catch (e) {} render(); }
+      catch (e) { if (!silent) uiToast("Пароль не підходить. Перевірте його в пам'ятці."); try { localStorage.removeItem("cartel_pass"); } catch (e2) {} } };
+    $("#lockForm").onsubmit = (e) => { e.preventDefault(); tryPass($("#pw").value.trim()); };
+    let saved = null; try { saved = localStorage.getItem("cartel_pass"); } catch (e) {}
+    if (saved && !renderAdmin._tried) { renderAdmin._tried = true; tryPass(saved, true); }
+    return;
+  }
   const q = s.q ? qById(s.q.qid) : null;
   const playURL = location.origin + location.pathname + "?role=play&room=" + net.room;
   const step = adminStep(s);
-  const left = `
+  const passive = s.engine && s.engine.id !== ENGINE_ID && net.now() - (s.engine.ts || 0) < 8000;
+  const left = `${passive ? `<div class="adm-box warn-box">⚠️ Пульт уже відкрито в іншій вкладці чи на іншому пристрої. Гру веде та вкладка — закрийте зайву.</div>` : ""}
     <div class="adm-box step-box">
       <div class="adm-title">Що робити зараз</div>
       <p class="step-text">${step.text}</p>
@@ -1010,20 +1086,20 @@ function renderAdmin(app) {
   if (q) {
     center += `<div class="cheat"><div class="cheat-head">🤫 Шпаргалка Хефи</div>
       <div class="q-text small">${esc(q.q)}</div>
-      <div class="cheat-ans">${cheatAnswer(q)}</div>
-      ${q.expl ? `<div class="cheat-expl">${esc(q.expl)}</div>` : ""}
+      <div class="cheat-ans">${q.type === "oral" ? "Усне питання — оцінюєте ви." : answerText(q, secQ(q.id), true)}</div>
+      ${secQ(q.id).expl ? `<div class="cheat-expl">${esc(secQ(q.id).expl)}</div>` : ""}
       ${q.type === "oral" ? `<div class="oral-judge"><button class="btn yes" id="aOralOk">✅ Зарахувати</button><button class="btn no" id="aOralNo">❌ Не зарахувати</button></div>` : ""}
     </div>`;
   } else if (s.phase === "raid" && s.event) {
-    center += `<div class="cheat"><div class="q-text small">${esc(s.event.q)}</div><div class="cheat-ans">Відповідь: ${s.event.a ? "ТАК" : "НІ"}</div>
+    center += `<div class="cheat"><div class="q-text small">${esc(RAID_POOL[s.event.qi].q)}</div><div class="cheat-ans">Відповідь: ${SEC.raid[s.event.qi].a ? "ТАК" : "НІ"}</div>
     <button class="btn" id="aRaidEnd">Завершити облаву</button></div>`;
   } else if (s.phase === "duel" && s.event) {
     const dq = DUEL_POOL[s.event.qi];
-    center += `<div class="cheat"><div class="q-text small">${esc(dq.q)}</div><div class="cheat-ans">Відповідь: ${esc(dq.opts[dq.correct])}</div>
+    center += `<div class="cheat"><div class="q-text small">${esc(dq.q)}</div><div class="cheat-ans">Відповідь: ${esc(dq.opts[SEC.duel[s.event.qi].correct])}</div>
     <button class="btn" id="aDuelEnd">Завершити дуель</button></div>`;
   } else if (s.phase === "lavado" && s.event) {
     const lq = LAVADO_POOL[s.event.qi];
-    center += `<div class="cheat"><div class="q-text small">${esc(lq.q)}</div><div class="cheat-ans">${cheatAnswer(lq)}</div>
+    center += `<div class="cheat"><div class="q-text small">${esc(lq.q)}</div><div class="cheat-ans">${answerText(lq, SEC.lav[s.event.qi], true)}</div>
     <button class="btn" id="aLavEnd">Завершити відмивання</button></div>`;
   } else center += `<div class="dim">Питання зараз немає. Обери дію зліва або чекай на хід команд.</div>`;
   center += `</div>
@@ -1056,8 +1132,8 @@ function renderAdmin(app) {
   $("#aLot").onclick = () => E.loteria();
   $("#aLav").onclick = () => E.startLavado();
   $("#aDuel").onclick = () => { const a = $("#aD1").value, b = $("#aD2").value; if (a !== b) E.startDuel(a, b); };
-  $("#aPause").onclick = () => { if (!s.q) return; s.q.paused ? net.update("state/q", { paused: null, deadline: Date.now() + s.q.pausedLeft }) : net.update("state/q", { paused: true, pausedLeft: Math.max(0, s.q.deadline - Date.now()) }); };
-  $("#aPlus").onclick = () => { if (s.q) net.set("state/q/deadline", (s.q.deadline || Date.now()) + 15000); };
+  $("#aPause").onclick = () => { if (!s.q) return; s.q.paused ? net.update("state/q", { paused: null, deadline: net.now() + s.q.pausedLeft }) : net.update("state/q", { paused: true, pausedLeft: Math.max(0, s.q.deadline - net.now()) }); };
+  $("#aPlus").onclick = () => { if (s.q) net.set("state/q/deadline", (s.q.deadline || net.now()) + 15000); };
   $("#aRevealNow").onclick = () => { if (q && q.type !== "oral") E.reveal(); };
   $("#aOralOk") && ($("#aOralOk").onclick = () => E.reveal(true));
   $("#aOralNo") && ($("#aOralNo").onclick = () => E.reveal(false));
@@ -1089,14 +1165,4 @@ function adminStep(s) {
   if (ph === "final") return { text: "Гру завершено. Скопіюйте таблицю оцінок у розділі «Сервіс»." };
   return { text: "" };
 }
-function cheatAnswer(q) {
-  if (q.type === "single") return "Відповідь: " + esc(q.opts[q.correct]);
-  if (q.type === "multi") return "Відповіді: " + q.correct.map((i) => esc(q.opts[i])).join(" · ");
-  if (q.type === "order") return "Порядок: " + q.items.map((x) => esc(x)).join(" → ");
-  if (q.type === "match") return q.pairs.map((p) => esc(p[0]) + " → " + esc(p[1])).join("<br>");
-  if (q.type === "sort2") return q.items.map((it) => (it[1] === "A" ? "A" : "B") + ": " + esc(it[0])).join("<br>");
-  if (q.type === "oral") return "Усне питання — оцінюєте ви.";
-  return "";
-}
-
 document.addEventListener("DOMContentLoaded", boot);
