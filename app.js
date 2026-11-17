@@ -41,7 +41,7 @@ if (!myPid) { myPid = "p" + Math.random().toString(36).slice(2, 9); localStorage
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; };
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const money = (n) => "$" + (n | 0).toLocaleString("uk-UA");
+const money = (n) => ((n | 0) < 0 ? "−$" : "$") + Math.abs(n | 0).toLocaleString("uk-UA");
 
 function st() { return (S && S.state) || {}; }
 function teams() { const t = (S && S.teams) || {}; const r = {}; for (const d of TEAM_DEFS) r[d.id] = { name: d.name, cash: CFG.START_CASH, dirty: 0, debt: 0, silenced: {}, ...(t[d.id] || {}) }; return r; }
