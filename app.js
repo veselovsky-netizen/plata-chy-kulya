@@ -97,7 +97,8 @@ function snd(kind) {
       n.buffer = b; const g = audio.createGain(); g.gain.value = vol; n.connect(g); g.connect(audio.destination); n.start(t0 + dt);
     };
     if (kind === "click") beep(1200, 0, 0.04, "square", 0.08);
-    if (kind === "spin") { const D = SPIN_MS / 1000; for (let k = 1; k <= 36; k++) { const p = k / 36; const t = D * (1 - Math.pow(1 - p, 0.45)); beep(1500, t, 0.018, "square", 0.06); beep(140, t, 0.03, "sine", 0.08); } }
+    if (kind === "spin") { beep(900, 0, 0.03, "square", 0.12); beep(220, 0.05, 0.06, "square", 0.1); }
+    if (kind === "rtick") { beep(1700, 0, 0.015, "square", 0.05); beep(150, 0, 0.025, "sine", 0.07); }
     if (kind === "blank") { beep(500, 0, 0.05); beep(300, 0.07, 0.08); }
     if (kind === "shot") { noise(0, 0.25, 0.35); beep(90, 0, 0.3, "sawtooth", 0.25); }
     if (kind === "win") { beep(523, 0, 0.12, "triangle", 0.18); beep(659, 0.12, 0.12, "triangle", 0.18); beep(784, 0.24, 0.25, "triangle", 0.2); }
@@ -526,6 +527,7 @@ function boot() {
   document.body.dataset.role = ROLE;
   unsub = net.onValue("", (data) => { S = data || {}; render(); if (ROLE === "projector") soundFromState(); if (ROLE === "admin") processActions(S.actions); });
   document.addEventListener("click", () => { if (!audio && AC) try { audio = new AC(); } catch (e) {} }, { once: true });
+  if (window.requestAnimationFrame) requestAnimationFrame(barrelLoop);
   if (ROLE === "projector") setInterval(renderTimerOnly, 500);
   if (ROLE === "play") setInterval(renderTimerOnly, 500);
   if (ROLE === "admin") setInterval(renderTimerOnly, 500);
@@ -589,6 +591,17 @@ function leaderboardHTML(compact) {
     </div>`;
   }).join("") + `</div>`;
 }
+// Великі кнопки тем для телефона стрільця: одна тема — один рядок.
+function topicPickHTML() {
+  const used = st().usedQ || {};
+  return `<div class="topic-list">` + TERRITORIES.map((t) => {
+    const left = QUESTIONS[t.id].filter((q) => !used[q.id]).length;
+    return `<button class="topic ${left ? "" : "empty"}" data-terr="${t.id}" ${left ? "" : "disabled"}>
+      <span class="topic-ico">${t.icon}</span>
+      <span class="topic-txt"><b>${t.name}</b><span>${t.sub}</span></span>
+      <span class="topic-left">${left ? left + " пит." : "немає"}</span></button>`;
+  }).join("") + `</div>`;
+}
 function territoriesHTML(clickable) {
   const inf = S.influence || {};
   return `<div class="terr-grid">` + TERRITORIES.map((t) => {
@@ -605,14 +618,31 @@ function territoriesHTML(clickable) {
     </div>`;
   }).join("") + `</div>`;
 }
+// Кут барабана від часу (синхронно на всіх екранах за серверним часом).
+// Розгін-гальмування з «тріскачкою» (гнізда перескакують клацанням) і пружною зупинкою.
+function barrelTarget(idx) { return 360 * 5 + ((360 - idx * 60) % 360); }
+function barrelAngle(idx, elapsed) {
+  const T = barrelTarget(idx), D = SPIN_MS, p1 = 0.8;
+  const p = Math.max(0, Math.min(1, elapsed / D));
+  if (p >= 1) return T;
+  if (p < p1) {
+    const x = p / p1;
+    const a = T * (1 - Math.pow(1 - x, 3));
+    const slow = Math.max(0, Math.min(1, (x - 0.5) / 0.5));
+    const seg = Math.floor(a / 60), f = a / 60 - seg;
+    return 60 * (seg + f + slow * (Math.pow(f, 4) - f));
+  }
+  const t = (p - p1) / (1 - p1);
+  return T + 10 * Math.exp(-5 * t) * Math.sin(3 * Math.PI * t);
+}
 function barrelHTML() {
   const sp = st().spin || {};
   const spinning = sp.status === "spinning";
   const done = sp.status === "done";
   const idx = sp.idx | 0;
   const result = done ? sp.result : null;
-  const target = 360 * 6 + ((360 - idx * 60) % 360); // гніздо idx зупиняється під бойком угорі
   const elapsed = spinning ? Math.max(0, net.now() - (sp.ts || net.now())) : 0;
+  const ang = spinning ? barrelAngle(idx, elapsed) : done ? barrelTarget(idx) : 0;
   const COL = { blank: "#FFF3DC", easy: "#2FBF71", mid: "#FFA41B", deadly: "#E5007D" };
   const chambers = CHAMBERS.map((k, i) => {
     const a = (i * 60 - 90) * Math.PI / 180;
@@ -622,27 +652,51 @@ function barrelHTML() {
       <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="11" fill="#0E0A24" opacity=".85"/>
       <text x="${x.toFixed(1)}" y="${(y + 5).toFixed(1)}" text-anchor="middle" font-size="14" fill="#FFF3DC" font-weight="800">${k === "blank" ? "×" : k === "easy" ? "1" : k === "mid" ? "2" : "3"}</text></g>`;
   }).join("");
-  // жолобки між гніздами — як на справжньому барабані
   const flutes = [0, 1, 2, 3, 4, 5].map((i) => {
     const a = (i * 60 - 60) * Math.PI / 180;
     return `<ellipse cx="${(100 + 82 * Math.cos(a)).toFixed(1)}" cy="${(100 + 82 * Math.sin(a)).toFixed(1)}" rx="7" ry="13" transform="rotate(${i * 60 - 60 + 90} ${(100 + 82 * Math.cos(a)).toFixed(1)} ${(100 + 82 * Math.sin(a)).toFixed(1)})" fill="#2A1D5C"/>`;
   }).join("");
-  const style = spinning
-    ? `--rot:${target}deg;--dur:${SPIN_MS}ms;animation-delay:-${Math.min(elapsed, SPIN_MS)}ms`
-    : `transform:rotate(${done ? target : 0}deg)`;
   return `<div class="barrel-wrap">
-    <div class="barrel ${done ? "landed" : ""}">
+    <div class="barrel ${spinning ? "spinning" : ""} ${done ? "landed lvl-" + result : ""}">
       <svg class="pin" viewBox="0 0 40 30" aria-hidden="true"><path d="M2 2 H38 L20 28 Z" fill="#FFF3DC" stroke="#0E0A24" stroke-width="4" stroke-linejoin="round"/></svg>
-      <svg class="cyl ${spinning ? "spinning" : ""}" viewBox="0 0 200 200" style="${style}" role="img" aria-label="Барабан">
+      <svg class="cyl" viewBox="0 0 200 200" style="transform:rotate(${ang.toFixed(2)}deg)" role="img" aria-label="Барабан">
         <circle cx="100" cy="100" r="96" fill="#3B2D78" stroke="#0E0A24" stroke-width="6"/>
         ${flutes}
         ${chambers}
         <circle cx="100" cy="100" r="15" fill="#FFA41B" stroke="#0E0A24" stroke-width="4"/>
       </svg>
+      <div class="glare" aria-hidden="true"></div>
     </div>
-    <div class="barrel-legend"><span>× холосте</span><span>1 легке</span><span>2 середнє</span><span>3 смертельне</span></div>
-    ${result ? `<div class="barrel-result lvl-${result}">${LEVEL_ICON[result]} ${LEVEL_UA[result]}${result === "blank" ? " — без питання, +" + money(CFG.BLANK_REWARD) : ""}</div>` : spinning ? `<div class="barrel-result dim">Барабан крутиться…</div>` : ""}
+    ${result ? `<div class="barrel-result lvl-${result}">${LEVEL_ICON[result]} ${LEVEL_UA[result]}${result === "blank" ? " — без питання, +" + money(CFG.BLANK_REWARD) : ""}</div>`
+      : spinning ? `<div class="barrel-result dim">Барабан крутиться…</div>` : ""}
+    <div class="barrel-legend"><span><b>×</b> холосте: гроші без питання</span><span><b>1</b> легке</span><span><b>2</b> середнє</span><span><b>3</b> смертельне</span></div>
   </div>`;
+}
+// Плавна анімація: кожен кадр рахує кут від часу, тож перемальовування сторінки її не збиває.
+let barrelSeg = null;
+function barrelLoop() {
+  const sp = (st() || {}).spin || {};
+  if (sp.status === "spinning") {
+    const el = Math.max(0, net.now() - (sp.ts || net.now()));
+    const a = barrelAngle(sp.idx | 0, el), a2 = barrelAngle(sp.idx | 0, el + 16);
+    const v = Math.abs(a2 - a);
+    document.querySelectorAll(".cyl").forEach((c) => {
+      c.style.transform = "rotate(" + a.toFixed(2) + "deg)";
+      c.classList.toggle("blur2", v > 14); c.classList.toggle("blur1", v > 6 && v <= 14);
+    });
+    const seg = Math.floor((a + 30) / 60);
+    if (barrelSeg !== null && seg !== barrelSeg && el < SPIN_MS) {
+      const meShooter = ROLE === "play" && st().shooter === myPid;
+      if (ROLE === "projector" || meShooter) snd("rtick");
+      if (meShooter && navigator.vibrate) try { navigator.vibrate(8); } catch (e) {}
+    }
+    barrelSeg = seg;
+  } else {
+    if (barrelSeg !== null && sp.status === "done" && ROLE === "play" && st().shooter === myPid && navigator.vibrate) try { navigator.vibrate([60, 40, 120]); } catch (e) {}
+    barrelSeg = null;
+    document.querySelectorAll(".cyl.blur1,.cyl.blur2").forEach((c) => c.classList.remove("blur1", "blur2"));
+  }
+  requestAnimationFrame(barrelLoop);
 }
 function questionBodyHTML(q, forRole, myAnswer) {
   let inner = "";
@@ -813,8 +867,8 @@ function renderPlay(app) {
   // --- спін ---
   else if (s.phase === "spin") {
     if (shooter && (!s.spin || s.spin.status === "idle")) {
-      body = `<div class="phase-head">Обери територію і тисни на барабан</div>${territoriesHTML(true)}
-      <button class="btn big danger-btn" id="spinBtn" disabled>🔫 КРУТИТИ БАРАБАН</button><div class="dim small" id="spinHint">Спершу обери територію</div>`;
+      body = `<div class="step-lbl">Крок 1 з 2 · обери тему питання</div>${topicPickHTML()}
+      <div class="act-bar"><button class="btn big danger-btn" id="spinBtn" disabled>👆 Спершу обери тему</button></div>`;
     } else body = (s.spin && s.spin.status !== "idle") ? barrelHTML() : `<div class="center-msg">${myTurn ? "Стрілець обирає територію…" : "Ходить «" + esc((teams()[s.turnTeam] || {}).name || "") + "»"}</div>`;
   }
   // --- питання ---
@@ -831,11 +885,11 @@ function renderPlay(app) {
         ${q.type === "oral"
           ? (shooter ? `<button class="btn big" id="oralReady" ${s.q.oralReady ? "disabled" : ""}>${s.q.oralReady ? "Чекаємо Хефу…" : "🎤 МИ ГОТОВІ ВІДПОВІДАТИ"}</button>` : `<div class="dim">Готуйте аргументи разом!</div>`)
           : shooter
-            ? `<button class="btn big danger-btn" id="submitFinal">✅ ФІНАЛЬНА ВІДПОВІДЬ КАРТЕЛЮ</button>
+            ? `<div class="act-bar"><button class="btn big danger-btn" id="submitFinal">✅ ВІДПОВІСТИ ЗА КОМАНДУ</button></div>
                <div class="advice">${teamMembers(tid).filter((x) => x.pid !== myPid && ((S.votes || {})[q.id] || {})[x.pid]).map((x) => `<div class="adv-row">💬 ${esc(x.name)} проголосував(ла)</div>`).join("")}</div>`
             : silenced
               ? `<div class="omerta">🤫 Омерта: ти вже відповідав — мовчи до кінця раунду</div>`
-              : `<button class="btn" id="sendVote">💬 Надіслати пораду стрільцю</button><div class="dim small">Стрілець побачить твій варіант</div>`}
+              : `<div class="act-bar"><button class="btn big" id="sendVote">💬 Підказати відповідачу</button><div class="dim small">Відповідач побачить, що ти проголосував(ла)</div></div>`}
       </div>`;
     } else {
       // ставки інших картелів
@@ -847,7 +901,7 @@ function renderPlay(app) {
         ${q.type === "oral" ? `<div class="dim">Усне питання — слухайте відповідь команди.</div>` : myShadow
           ? `<div class="bet-done">👥 Твоя тіньова відповідь прийнята. Результат — після розкриття.</div>`
           : `<div class="shadow-box"><div class="phase-head">👥 Тіньова відповідь</div><div class="dim small">Відповідай сам — це твої особисті бали в оцінку, гроші команди не змінюються.</div>
-             ${questionBodyHTML(q, "act", draftAnswer)}<button class="btn big" id="sendShadow">Відповісти</button></div>`}
+             ${questionBodyHTML(q, "act", draftAnswer)}<div class="act-bar"><button class="btn big" id="sendShadow">✅ Відповісти</button></div></div>`}
         ${isCap ? (myBet ? `<div class="bet-done">Ставка зроблена: ${myBet.dir === "za" ? "ЗА" : "ПРОТИ"} ${money(myBet.amt)}</div>` :
           `<div class="phase-head">💸 Ставки</div><div class="bet-grid">
             ${CFG.BET_AMTS.map((a) => `<button class="btn bet-btn za" data-dir="za" data-amt="${a}">ЗА +80%<br>${money(a)}</button>`).join("")}
@@ -926,10 +980,10 @@ function renderPlay(app) {
   app.querySelectorAll(".shooter-btn").forEach((b) => b.onclick = () => { act("shooter", { pid: b.dataset.p }); b.disabled = true; snd("click"); });
   // вибір території + спін (стрілець)
   let chosenTerr = null;
-  app.querySelectorAll(".terr.clickable").forEach((b) => b.onclick = () => {
+  app.querySelectorAll(".topic[data-terr]:not([disabled])").forEach((b) => b.onclick = () => {
     chosenTerr = b.dataset.terr;
-    app.querySelectorAll(".terr").forEach((x) => x.classList.toggle("picked", x === b));
-    const sb = $("#spinBtn"); if (sb) { sb.disabled = false; $("#spinHint").textContent = "Територія: " + terrDef(chosenTerr).name; }
+    app.querySelectorAll(".topic").forEach((x) => x.classList.toggle("picked", x === b));
+    const sb = $("#spinBtn"); if (sb) { sb.disabled = false; sb.textContent = "🔫 Крок 2 · КРУТИТИ БАРАБАН"; sb.classList.add("pulse"); }
     snd("click");
   });
   $("#spinBtn") && ($("#spinBtn").onclick = (e) => { if (chosenTerr) { act("spin", { terr: chosenTerr }); e.target.disabled = true; e.target.textContent = "Крутимо…"; snd("click"); } });
@@ -947,7 +1001,7 @@ function renderPlay(app) {
     if (draftAnswer == null && qById(s.q.qid).type === "order") draftAnswer = qById(s.q.qid).items.map((_, i) => i);
     if (draftAnswer == null) { uiToast("Спершу обери варіант"); return; }
     net.set("votes/" + s.q.qid + "/" + myPid, { v: draftAnswer, t: net.now() });
-    snd("click");
+    snd("click"); uiToast("Підказку надіслано 👍");
   });
   $("#oralReady") && ($("#oralReady").onclick = () => net.set("state/q/oralReady", true));
   $("#nadaBtn") && ($("#nadaBtn").onclick = (e) => { snd("coin"); act("nada"); e.target.disabled = true; });
@@ -973,25 +1027,35 @@ function renderPlay(app) {
   });
 }
 
+// Головна підказка на телефоні: жовта — «зроби це зараз», сіра — «чекай».
+let lastActKey = "";
 function nowBanner(s, tid, isCap, myTurn, shooter, silenced) {
   const ph = s.phase; const other = s.turnTeam && teams()[s.turnTeam] ? teams()[s.turnTeam].name : "";
-  let txt = "";
-  if (!ph || ph === "lobby") txt = "Ти в грі. Чекай старту.";
-  else if (ph === "final") txt = "Гру завершено.";
-  else if (ph === "raid") txt = "Облава! Відповідай сам — ТАК чи НІ.";
-  else if (ph === "duel") txt = "Дуель двох команд — відповідає капітан, хто швидше.";
-  else if (ph === "lavado") txt = "Відмивання: команди з «брудними» грошима виконують завдання.";
-  else if (ph === "between") txt = "Раунд завершено. Чекай, що вирішить викладач.";
+  let txt = "", act = false;
+  const answered = (k) => s.q && (((S[k] || {})[s.q.qid] || {})[myPid]);
+  if (!ph || ph === "lobby") txt = "⏳ Ти в грі. Чекай, поки викладач почне.";
+  else if (ph === "final") txt = "🏁 Гру завершено. Результати — на проєкторі.";
+  else if (ph === "raid") { const done = (S.raidVotes || {})[myPid] != null; act = !done; txt = done ? "✅ Відповідь прийнято. Чекай результат." : "👆 Облава! Тисни ТАК або НІ — відповідає кожен сам."; }
+  else if (ph === "duel") { const inDuel = s.event && [s.event.t1, s.event.t2].includes(tid); act = inDuel && isCap && !((S.duelAns || {})[tid] || {}).by; txt = act ? "👆 Дуель! Обери відповідь — швидше за суперника." : inDuel ? "⚔️ Дуель: відповідає ваш капітан. Підказуйте вголос!" : "👀 Дуель двох команд. Дивись на проєктор."; }
+  else if (ph === "lavado") { const inLav = s.event && (s.event.teams || []).includes(tid); act = inLav && isCap && !((S.lavAns || {})[tid] || {}).by; txt = act ? "👆 Відмивання: дай відповідь, щоб гроші стали чистими." : inLav ? "🧺 Відповідає ваш капітан. Підказуйте вголос!" : "👀 Відмивання в інших команд. Чекай."; }
+  else if (ph === "between") txt = "⏳ Раунд завершено. Чекай, що вирішить викладач.";
   else if (myTurn) {
-    if (ph === "turn") txt = isCap ? "Ваш хід! Обери, хто відповідає." : "Ваш хід! Капітан обирає, хто відповідає.";
-    else if (ph === "spin") txt = shooter ? "Обери тему і крути барабан." : "Ваш гравець крутить барабан.";
-    else if (ph === "question") txt = shooter ? "Ти відповідаєш за команду. Порадься й натисни «Фінальна відповідь»." : silenced ? "Ти вже відповідав у цьому раунді — тільки слухай." : "Підкажи відповідачу: обери варіант і надішли пораду.";
-    else txt = "Дивись результат на проєкторі.";
+    if (ph === "turn") { act = isCap; txt = isCap ? "👆 Ваш хід! Обери, хто з команди відповідає." : "⏳ Ваш хід! Капітан обирає, хто відповідає."; }
+    else if (ph === "spin") { act = shooter && (!s.spin || s.spin.status === "idle"); txt = act ? "👆 Ти відповідаєш! Обери тему й крути барабан." : shooter ? "🔫 Барабан крутиться…" : "🔫 Ваш гравець крутить барабан. Дивись!"; }
+    else if (ph === "question") {
+      if (shooter) { act = true; txt = "👆 Ти відповідаєш за команду. Радься й тисни «Відповісти»."; }
+      else if (silenced) txt = "🤫 Ти вже відповідав у цьому раунді — зараз тільки слухай.";
+      else { act = !answered("votes"); txt = act ? "👆 Обери варіант і підкажи відповідачу." : "✅ Підказку надіслано. Чекай відповідь команди."; }
+    }
+    else txt = "👀 Дивись результат на проєкторі.";
   } else {
-    if (ph === "question") txt = isCap ? `Відповідає «${other}». Можеш поставити на них.` : `Відповідає «${other}». Ваш капітан може зробити ставку.`;
-    else txt = `Зараз хід «${other}». Ваша черга буде пізніше в цьому раунді.`;
+    if (ph === "question") { act = !answered("shadow") && !(s.q && qById(s.q.qid) && qById(s.q.qid).type === "oral"); txt = act ? `👆 Відповідає «${other}». Ти теж відповідай — це твої особисті бали.` : `✅ Готово. Чекай розкриття відповіді «${other}».`; }
+    else txt = `⏳ Зараз хід «${other}». Ваша черга буде пізніше.`;
   }
-  return `<div class="now-banner" role="status">${txt}</div>`;
+  const key = (act ? "A" : "W") + ph + (s.q ? s.q.qid : "") + (s.spin ? s.spin.status : "");
+  if (act && key !== lastActKey && navigator.vibrate) try { navigator.vibrate(150); } catch (e) {}
+  lastActKey = key;
+  return `<div class="now-banner ${act ? "act" : "wait"}" role="status">${txt}</div>`;
 }
 function bindAnswerInputs(app, s) {
   const getQ = () => {
