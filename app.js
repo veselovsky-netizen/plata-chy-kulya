@@ -1,5 +1,5 @@
 // ============================================================
-// «ПЛАТА ЧИ КУЛЯ» — рушій гри. Ролі: admin / projector / play
+// «ПЛАН ЧИ ПРОГНОЗ» — рушій гри. Ролі: admin / projector / play
 // Логіку гри виконує вкладка викладача (admin) — вона «движок».
 // Телефони пишуть лише свої дії; проєктор — тільки показує.
 // ============================================================
@@ -449,8 +449,15 @@ function renderTimerOnly() {
   if (left <= 5 && left > 0 && ROLE === "projector") snd("tick");
 }
 
+let renderPending = false;
 function render() {
   const app = $("#app"); if (!app) return;
+  // Поки студент вибирає в списку чи вводить текст — не перемальовуємо (інакше список закривається)
+  const a = document.activeElement;
+  if (a && app.contains(a) && (a.tagName === "SELECT" || a.tagName === "INPUT" || a.tagName === "TEXTAREA")) {
+    if (!renderPending) { renderPending = true; a.addEventListener("blur", () => setTimeout(() => { renderPending = false; render(); }, 400), { once: true }); }
+    return;
+  }
   if (ROLE === "home") return renderHome(app);
   if (ROLE === "projector") return renderProjector(app);
   if (ROLE === "play") return renderPlay(app);
@@ -462,8 +469,8 @@ function renderHome(app) {
   app.innerHTML = `
   <div class="home">
     <div class="papel"></div>
-    <h1 class="title-big">ПЛАТА ЧИ КУЛЯ</h1>
-    <div class="subtitle">Фінансова імперія · Тема 9: Фінансове планування та прогнозування</div>
+    <h1 class="title-big">ПЛАН ЧИ ПРОГНОЗ</h1>
+    <div class="subtitle">Командна гра картелів з теми «Фінансове планування та прогнозування». Оберіть, з якого пристрою ви заходите.</div>
     <div class="home-cards">
       <a class="home-card" href="?role=projector&room=${net.room}"><div class="hc-icon">📽️</div><h3>Проєктор</h3><p>Великий екран аудиторії</p></a>
       <a class="home-card" href="?role=play&room=${net.room}"><div class="hc-icon">📱</div><h3>Студент</h3><p>Вхід із телефона</p></a>
@@ -512,15 +519,15 @@ function barrelHTML() {
   return `<div class="barrel-wrap">
     <div class="barrel ${spinning ? "spinning" : ""}" id="barrel">
       <svg viewBox="0 0 200 200">
-        <circle cx="100" cy="100" r="95" fill="#2b2320" stroke="#c9a227" stroke-width="5"/>
+        <circle cx="100" cy="100" r="95" fill="#0E0A24" stroke="#FFA41B" stroke-width="6"/>
         ${[0, 1, 2, 3, 4, 5].map((i) => {
           const a = (i * 60 - 90) * Math.PI / 180;
-          return `<circle cx="${100 + 55 * Math.cos(a)}" cy="${100 + 55 * Math.sin(a)}" r="22" fill="#0f0c0a" stroke="#6b5a3e" stroke-width="3"/>`;
+          return `<circle cx="${100 + 55 * Math.cos(a)}" cy="${100 + 55 * Math.sin(a)}" r="22" fill="#2A1D5C" stroke="#E5007D" stroke-width="4"/>`;
         }).join("")}
-        <circle cx="100" cy="100" r="16" fill="#c9a227"/>
+        <circle cx="100" cy="100" r="16" fill="#FFF3DC"/>
       </svg>
     </div>
-    ${result ? `<div class="barrel-result lvl-${result}">${LEVEL_ICON[result]} ${LEVEL_UA[result].toUpperCase()}${result === "blank" ? " — без питання, +" + money(CFG.BLANK_REWARD) : ""}</div>` : ""}
+    ${result ? `<div class="barrel-result lvl-${result}">${LEVEL_ICON[result]} ${LEVEL_UA[result]}${result === "blank" ? " — без питання, +" + money(CFG.BLANK_REWARD) : ""}</div>` : ""}
   </div>`;
 }
 function questionBodyHTML(q, forRole, myAnswer) {
@@ -562,7 +569,7 @@ function renderProjector(app) {
   const playURL = location.origin + location.pathname + "?role=play&room=" + net.room;
   if (!s.phase || s.phase === "lobby") {
     main = `<div class="proj-lobby">
-      <h1 class="title-big">ПЛАТА ЧИ КУЛЯ</h1>
+      <h1 class="title-big">ПЛАН ЧИ ПРОГНОЗ</h1>
       <div class="subtitle">Збирайте свої картелі, компаньєрос!</div>
       <div class="qr-box"><div id="qrcode"></div><div class="qr-url">${esc(playURL)}</div></div>
       <div class="lobby-teams">${TEAM_DEFS.map((d) => {
@@ -630,14 +637,14 @@ function renderProjector(app) {
     if (!center) center = territoriesHTML(false);
 
     main = `<div class="proj-game">
-      <div class="proj-top"><span class="round-badge">Раунд ${s.round || "—"}/${CFG.ROUNDS}</span><span class="title-small">ПЛАТА ЧИ КУЛЯ</span><span id="timer" class="timer"></span></div>
+      <div class="proj-top"><span class="round-badge">Раунд ${s.round || "—"}/${CFG.ROUNDS}</span><span class="title-small">План чи Прогноз</span><span id="timer" class="timer"></span></div>
       <div class="proj-main">${center}</div>
       <div class="proj-side">${leaderboardHTML(true)}<div class="log-box">${Object.values(S.log || {}).sort((a, b) => b.t - a.t).slice(0, 6).map((l) => `<div class="log-line">${esc(l.msg)}</div>`).join("")}</div></div>
     </div>`;
   }
   app.innerHTML = `<div class="papel"></div>` + main;
   if ((!s.phase || s.phase === "lobby") && window.QRCode) {
-    const qel = $("#qrcode"); if (qel) { qel.innerHTML = ""; new QRCode(qel, { text: playURL, width: 200, height: 200, colorDark: "#1a120d", colorLight: "#f5e6c8" }); }
+    const qel = $("#qrcode"); if (qel) { qel.innerHTML = ""; new QRCode(qel, { text: playURL, width: 200, height: 200, colorDark: "#0E0A24", colorLight: "#FFF3DC" }); }
   }
 }
 
@@ -648,7 +655,7 @@ function renderPlay(app) {
   // --- вхід ---
   if (!m || !m.team) {
     app.innerHTML = `<div class="papel"></div><div class="join">
-      <h2 class="title-small">ПЛАТА ЧИ КУЛЯ</h2>
+      <h2 class="title-small">План чи Прогноз</h2>
       <input id="pname" class="inp" maxlength="24" placeholder="Твоє ім'я та прізвище" value="${esc((me() || {}).name || "")}">
       <div class="join-teams">${TEAM_DEFS.map((d) => {
         const n = teamMembers(d.id).length;
