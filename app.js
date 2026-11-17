@@ -41,7 +41,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 const money = (n) => "$" + (n | 0).toLocaleString("uk-UA");
 
 function st() { return (S && S.state) || {}; }
-function teams() { return (S && S.teams) || {}; }
+function teams() { const t = (S && S.teams) || {}; const r = {}; for (const d of TEAM_DEFS) r[d.id] = { name: d.name, cash: CFG.START_CASH, dirty: 0, debt: 0, silenced: {}, ...(t[d.id] || {}) }; return r; }
 function players() { return (S && S.players) || {}; }
 function me() { return players()[myPid] || null; }
 function myTeam() { const m = me(); return m && m.team ? teams()[m.team] : null; }
