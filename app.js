@@ -48,7 +48,7 @@ function myTeam() { const m = me(); return m && m.team ? teams()[m.team] : null;
 function teamMembers(tid) { const r = []; const pl = players(); for (const pid in pl) if (pl[pid].team === tid) r.push({ pid, ...pl[pid] }); r.sort((a, b) => (a.ts || 0) - (b.ts || 0)); return r; }
 function activeTids() { const r = []; for (const d of TEAM_DEFS) if (teamMembers(d.id).length) r.push(d.id); return r; }
 function netWorth(t) { return (t.cash | 0) + (t.dirty | 0) - (t.debt | 0); }
-function isSilenced(tid, pid) { const t = teams()[tid]; return !!(t && t.silenced && t.silenced[pid] === st().round); }
+function isSilenced(tid, pid) { const t = teams()[tid]; return !!(t && st().round && t.silenced && t.silenced[pid] === st().round); }
 function qById(qid) { for (const terr in QUESTIONS) for (const q of QUESTIONS[terr]) if (q.id === qid) return { ...q, terr }; return null; }
 function terrDef(id) { return TERRITORIES.find((t) => t.id === id); }
 function log(msg) { net.push("log", { t: Date.now(), msg }); }
