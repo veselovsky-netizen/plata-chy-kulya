@@ -126,17 +126,42 @@ function scoreAnswer(q, v) {
   return 0;
 }
 
+
+// ============================================================
+// ДІАЛОГИ НА СТОРІНЦІ (системні confirm/alert блокуються в деяких браузерах)
+// ============================================================
+function uiToast(text) {
+  let box = document.getElementById("toasts");
+  if (!box) { box = document.createElement("div"); box.id = "toasts"; box.setAttribute("role", "status"); document.body.appendChild(box); }
+  const t = document.createElement("div"); t.className = "toast"; t.textContent = text; box.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+function uiConfirm(text, okLabel) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement("div"); wrap.className = "modal-wrap";
+    wrap.innerHTML = `<div class="modal" role="dialog" aria-modal="true"><p class="modal-text"></p><div class="modal-btns"><button class="btn" data-a="no">Скасувати</button><button class="btn danger-btn" data-a="ok"></button></div></div>`;
+    wrap.querySelector(".modal-text").textContent = text;
+    wrap.querySelector('[data-a="ok"]').textContent = okLabel || "Так";
+    const done = (v) => { wrap.remove(); resolve(v); };
+    wrap.addEventListener("click", (e) => { const a = e.target.dataset && e.target.dataset.a; if (a) done(a === "ok"); else if (e.target === wrap) done(false); });
+    document.body.appendChild(wrap);
+    wrap.querySelector('[data-a="ok"]').focus();
+  });
+}
+
 // ============================================================
 // ДВИЖОК (виконується ЛИШЕ у вкладці admin)
 // ============================================================
 const E = {
-  newGame() {
-    if (!confirm("Нова гра: все обнулиться. Точно?")) return;
+  async newGame() {
+    if (!(await uiConfirm("Почати нову гру? Гроші, бали й усі приєднані студенти обнуляться — їм доведеться зайти знову.", "Почати нову гру"))) return;
     const init = { state: { phase: "lobby", round: 0, usedQ: {}, turnsTaken: {} }, teams: {}, players: null, votes: null, answers: null, bets: null, influence: null, journal: null, log: null, nada: null };
     for (const d of TEAM_DEFS) init.teams[d.id] = { name: d.name, cash: CFG.START_CASH, dirty: 0, debt: 0, silenced: {} };
     net.set("", init);
   },
   startRound(r) {
+    if (!activeTids().length) { uiToast("Ще ніхто не приєднався. Покажіть студентам QR-код на проєкторі й дочекайтеся команд."); return; }
+    net.set("state/turnsTaken/" + r, null); // повторний запуск раунду — з чистого аркуша
     const upd = { "state/phase": "turn", "state/round": r, "state/turnTeam": null, "state/q": null, "state/spin": null, "state/revealData": null, "state/event": null };
     // омерта знімається на початку раунду (silenced зберігає номер раунду)
     net.update("", upd);
@@ -409,7 +434,7 @@ const E = {
       csv += `${p.name};${(teams()[p.team] || {}).name || "—"};${n};${ok.toFixed(1)};${n ? Math.round((ok / n) * 100) : 0};` +
         TERRITORIES.map((t) => per[t.id][1] ? Math.round((per[t.id][0] / per[t.id][1]) * 100) + "%" : "—").join(";") + "\n";
     }
-    navigator.clipboard.writeText(csv).then(() => alert("Таблицю скопійовано! Встав у Excel / Google Таблиці."));
+    navigator.clipboard.writeText(csv).then(() => uiToast("Таблицю скопійовано. Вставте її в Excel або Google Таблиці."), () => uiToast("Не вдалося скопіювати. Дозвольте браузеру доступ до буфера обміну."));
   },
 };
 
@@ -791,8 +816,8 @@ function renderPlay(app) {
   </div>`;
 
   // --- обробники ---
-  $("#exitBtn") && ($("#exitBtn").onclick = () => {
-    if (!confirm("Вийти з команди?")) return;
+  $("#exitBtn") && ($("#exitBtn").onclick = async () => {
+    if (!(await uiConfirm("Вийти з команди? Місце звільниться, і ти зможеш обрати іншу.", "Вийти"))) return;
     net.set("players/" + myPid, null);
     if (isCap) { const rest = teamMembers(tid).filter((x) => x.pid !== myPid); net.set("teams/" + tid + "/captain", rest.length ? rest[0].pid : null); }
   });
@@ -812,13 +837,13 @@ function renderPlay(app) {
   bindAnswerInputs(app, s);
   $("#submitFinal") && ($("#submitFinal").onclick = () => {
     const q = qById(s.q.qid);
-    if (draftAnswer == null) { alert("Спершу обери відповідь"); return; }
-    if (q.type === "multi" && (!Array.isArray(draftAnswer) || draftAnswer.length !== q.need)) { alert("Треба обрати рівно " + q.need); return; }
+    if (draftAnswer == null) { uiToast("Спершу обери відповідь"); return; }
+    if (q.type === "multi" && (!Array.isArray(draftAnswer) || draftAnswer.length !== q.need)) { uiToast("Треба обрати рівно " + q.need); return; }
     net.set("answers/" + q.id, { v: draftAnswer, t: Date.now(), by: myPid });
     E.reveal();
   });
   $("#sendVote") && ($("#sendVote").onclick = () => {
-    if (draftAnswer == null) { alert("Спершу обери варіант"); return; }
+    if (draftAnswer == null) { uiToast("Спершу обери варіант"); return; }
     net.set("votes/" + s.q.qid + "/" + myPid, { v: draftAnswer, t: Date.now() });
     snd("click");
   });
@@ -826,7 +851,7 @@ function renderPlay(app) {
   $("#nadaBtn") && ($("#nadaBtn").onclick = () => { snd("coin"); E.nada(tid); });
   app.querySelectorAll(".bet-btn").forEach((b) => b.onclick = () => {
     const amt = +b.dataset.amt;
-    if ((t.cash | 0) < amt) { alert("Не вистачає готівки"); return; }
+    if ((t.cash | 0) < amt) { uiToast("Не вистачає готівки на цю ставку"); return; }
     net.set("bets/" + s.q.qid + "/" + tid, { dir: b.dataset.dir, amt, by: myPid });
     E.applyMoney(tid, -amt, false, null); // ставка списується одразу, повернення при виграші = ставка+прибуток
     snd("coin");
@@ -835,7 +860,7 @@ function renderPlay(app) {
   $("#rNo") && ($("#rNo").onclick = () => { net.set("raidVotes/" + myPid, false); snd("click"); });
   app.querySelectorAll("[data-duel]").forEach((b) => b.onclick = () => net.set("duelAns/" + tid, { v: +b.dataset.duel, t: Date.now(), by: myPid }));
   $("#lavSubmit") && ($("#lavSubmit").onclick = () => {
-    if (draftAnswer == null) { alert("Спершу дай відповідь"); return; }
+    if (draftAnswer == null) { uiToast("Спершу дай відповідь"); return; }
     net.set("lavAns/" + tid, { v: draftAnswer, t: Date.now(), by: myPid });
   });
 }
@@ -956,7 +981,7 @@ function renderAdmin(app) {
   $("#aNew").onclick = () => E.newGame();
   [1, 2, 3].forEach((r) => $("#aR" + r).onclick = () => E.startRound(r));
   $("#aNext").onclick = () => E.nextTurn();
-  $("#aFinal").onclick = () => { if (confirm("Оголосити фінал?")) E.final(); };
+  $("#aFinal").onclick = async () => { if (await uiConfirm("Оголосити фінал? Гра завершиться, на проєкторі з'явиться подіум.", "Оголосити фінал")) E.final(); };
   $("#aRaid").onclick = () => E.startRaid();
   $("#aLot").onclick = () => E.loteria();
   $("#aLav").onclick = () => E.startLavado();
@@ -969,7 +994,7 @@ function renderAdmin(app) {
   $("#aRaidEnd") && ($("#aRaidEnd").onclick = () => E.endRaid());
   $("#aDuelEnd") && ($("#aDuelEnd").onclick = () => E.endDuel());
   $("#aLavEnd") && ($("#aLavEnd").onclick = () => E.endLavado());
-  $("#aCopy").onclick = () => navigator.clipboard.writeText(playURL).then(() => alert("Скопійовано: " + playURL));
+  $("#aCopy").onclick = () => navigator.clipboard.writeText(playURL).then(() => uiToast("Посилання скопійовано: " + playURL), () => uiToast("Скопіюйте вручну: " + playURL));
   $("#aCSV").onclick = () => E.exportPlayers();
   app.querySelectorAll("[data-adj]").forEach((b) => b.onclick = () => { const [tid, d] = b.dataset.adj.split("|"); E.applyMoney(tid, +d, false, `Хефа: «${teams()[tid].name}» ${+d > 0 ? "+" : ""}${money(+d)}`); });
   app.querySelectorAll("[data-paydebt]").forEach((b) => b.onclick = () => E.payDebt(b.dataset.paydebt));
