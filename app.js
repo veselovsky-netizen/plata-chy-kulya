@@ -21,12 +21,15 @@ const CFG = {
   TERR_BONUS: 1000,
 };
 const TEAM_DEFS = [
-  { id: "c1", name: "Кактуси",   icon: "🌵", color: "#2e9e6b" },
-  { id: "c2", name: "Скорпіони", icon: "🦂", color: "#d4a017" },
-  { id: "c3", name: "Койоти",    icon: "🐺", color: "#c0653a" },
-  { id: "c4", name: "Черепи",    icon: "💀", color: "#8e6bbf" },
-  { id: "c5", name: "Мачете",    icon: "🔪", color: "#c43b3b" },
+  { id: "c1", name: "Команда 1", icon: "🔴", color: "#FF4D5E" },
+  { id: "c2", name: "Команда 2", icon: "🟠", color: "#FF8A1F" },
+  { id: "c3", name: "Команда 3", icon: "🟡", color: "#FFD23F" },
+  { id: "c4", name: "Команда 4", icon: "🟢", color: "#2FBF71" },
+  { id: "c5", name: "Команда 5", icon: "🔵", color: "#3D8BFF" },
 ];
+// Барабан: 6 гнізд по колу (за годинниковою стрілкою від верху)
+const CHAMBERS = ["blank", "easy", "mid", "easy", "mid", "deadly"];
+const SPIN_MS = 3800;
 const LEVEL_UA = { easy: "Легке", mid: "Середнє", deadly: "Смертельне", blank: "Холостий" };
 const LEVEL_ICON = { easy: "🟢", mid: "🟡", deadly: "🔴", blank: "⚪" };
 
@@ -49,6 +52,25 @@ function teamMembers(tid) { const r = []; const pl = players(); for (const pid i
 function activeTids() { const r = []; for (const d of TEAM_DEFS) if (teamMembers(d.id).length) r.push(d.id); return r; }
 function netWorth(t) { return (t.cash | 0) + (t.dirty | 0) - (t.debt | 0); }
 function isSilenced(tid, pid) { const t = teams()[tid]; return !!(t && st().round && t.silenced && t.silenced[pid] === st().round); }
+function turnQueue() {
+  const r = st().round; const taken = ((st().turnsTaken || {})[r]) || {};
+  const ids = activeTids();
+  const left = ids.filter((t) => !taken[t] && t !== st().turnTeam).sort((a, b) => netWorth(teams()[a]) - netWorth(teams()[b]));
+  return { done: ids.filter((t) => taken[t]), cur: st().turnTeam, left };
+}
+function queueHTML() {
+  const s = st(); if (!s.round || s.phase === "final") return "";
+  const q = turnQueue(); const chip = (tid, cls) => { const d = TEAM_DEFS.find((x) => x.id === tid); return `<span class="qchip ${cls}" style="--tc:${d.color}">${d.icon} ${esc(teams()[tid].name)}</span>`; };
+  return `<div class="queue"><div class="queue-title">Раунд ${s.round} з ${CFG.ROUNDS}: кожна команда ходить по разу</div>
+    <div class="queue-row">${q.done.map((t) => chip(t, "done")).join("")}${q.cur && s.phase !== "between" ? chip(q.cur, "cur") : ""}${q.left.map((t) => chip(t, "left")).join("")}</div>
+    <div class="queue-hint">✓ вже ходили · ▶ ходить зараз · далі — від найбіднішої команди</div></div>`;
+}
+const RULES_HTML = `<ol class="rules">
+  <li>Відскануйте QR-код, введіть ім'я й оберіть команду (до 5 осіб). Перший у команді стає капітаном.</li>
+  <li>Гра має 3 раунди. У кожному раунді команди ходять <b>по черзі</b>, кожна по одному разу. Першою ходить та, у якої найменше грошей.</li>
+  <li>На своєму ході капітан обирає, хто відповідає. Цей гравець обирає тему й крутить барабан: барабан визначає складність питання. Холосте гніздо дає гроші без питання.</li>
+  <li>Хто відповів — мовчить до кінця раунду, тож відповідатимуть усі. Поки ходить чужа команда, ваш капітан може поставити на її успіх чи провал.</li>
+</ol>`;
 function qById(qid) { for (const terr in QUESTIONS) for (const q of QUESTIONS[terr]) if (q.id === qid) return { ...q, terr }; return null; }
 function terrDef(id) { return TERRITORIES.find((t) => t.id === id); }
 function log(msg) { net.push("log", { t: Date.now(), msg }); }
@@ -75,7 +97,7 @@ function snd(kind) {
       n.buffer = b; const g = audio.createGain(); g.gain.value = vol; n.connect(g); g.connect(audio.destination); n.start(t0 + dt);
     };
     if (kind === "click") beep(1200, 0, 0.04, "square", 0.08);
-    if (kind === "spin") for (let i = 0; i < 14; i++) beep(900 + i * 25, i * (0.05 + i * 0.012), 0.03, "square", 0.07);
+    if (kind === "spin") { const D = SPIN_MS / 1000; for (let k = 1; k <= 36; k++) { const p = k / 36; const t = D * (1 - Math.pow(1 - p, 0.45)); beep(1500, t, 0.018, "square", 0.06); beep(140, t, 0.03, "sine", 0.08); } }
     if (kind === "blank") { beep(500, 0, 0.05); beep(300, 0.07, 0.08); }
     if (kind === "shot") { noise(0, 0.25, 0.35); beep(90, 0, 0.3, "sawtooth", 0.25); }
     if (kind === "win") { beep(523, 0, 0.12, "triangle", 0.18); beep(659, 0.12, 0.12, "triangle", 0.18); beep(784, 0.24, 0.25, "triangle", 0.2); }
@@ -182,14 +204,14 @@ const E = {
   },
   doSpin(terr) {
     // 6 гнізд: 1 холостий, 2 легкі, 2 середні, 1 смертельне
-    const chambers = ["blank", "easy", "easy", "mid", "mid", "deadly"];
-    const result = chambers[Math.floor(Math.random() * 6)];
-    net.update("state", { terr, spin: { status: "spinning", result: null, ts: Date.now() } });
+    const idx = Math.floor(Math.random() * 6);
+    const result = CHAMBERS[idx];
+    net.update("state", { terr, spin: { status: "spinning", idx, result: null, ts: Date.now() } });
     setTimeout(() => {
       const s = st();
       const tid = s.turnTeam;
       if (result === "blank") {
-        net.update("state", { spin: { status: "done", result: "blank", ts: Date.now() } });
+        net.update("state", { spin: { status: "done", idx, result: "blank", ts: Date.now() } });
         setTimeout(() => {
           E.applyMoney(tid, CFG.BLANK_REWARD, false, `⚪ Холостий! «${teams()[tid].name}» забирає ${money(CFG.BLANK_REWARD)} без питання`);
           E.markTurnDone(tid);
@@ -198,7 +220,7 @@ const E = {
       } else {
         const q = E.pickQuestion(terr, result);
         if (!q) { log("Питання вичерпано, оберіть іншу територію"); net.update("state", { phase: "spin", spin: { status: "idle" } }); return; }
-        net.update("state", { spin: { status: "done", result, ts: Date.now() } });
+        net.update("state", { spin: { status: "done", idx, result, ts: Date.now() } });
         setTimeout(() => {
           const deadline = Date.now() + (q.type === "oral" ? CFG.Q_TIME.oralPrep : CFG.Q_TIME[result]) * 1000;
           net.update("", {
@@ -208,7 +230,7 @@ const E = {
           });
         }, 2200);
       }
-    }, 2600);
+    }, SPIN_MS + 150);
   },
   pickQuestion(terr, level) {
     const used = st().usedQ || {};
@@ -540,19 +562,40 @@ function territoriesHTML(clickable) {
 function barrelHTML() {
   const sp = st().spin || {};
   const spinning = sp.status === "spinning";
-  const result = sp.status === "done" ? sp.result : null;
+  const done = sp.status === "done";
+  const idx = sp.idx | 0;
+  const result = done ? sp.result : null;
+  const target = 360 * 6 + ((360 - idx * 60) % 360); // гніздо idx зупиняється під бойком угорі
+  const elapsed = spinning ? Math.max(0, Date.now() - (sp.ts || Date.now())) : 0;
+  const COL = { blank: "#FFF3DC", easy: "#2FBF71", mid: "#FFA41B", deadly: "#E5007D" };
+  const chambers = CHAMBERS.map((k, i) => {
+    const a = (i * 60 - 90) * Math.PI / 180;
+    const x = 100 + 52 * Math.cos(a), y = 100 + 52 * Math.sin(a);
+    const hit = done && i === idx;
+    return `<g class="ch ${hit ? "hit" : ""}"><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="21" fill="${COL[k]}" stroke="#0E0A24" stroke-width="4"/>
+      <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="11" fill="#0E0A24" opacity=".85"/>
+      <text x="${x.toFixed(1)}" y="${(y + 5).toFixed(1)}" text-anchor="middle" font-size="14" fill="#FFF3DC" font-weight="800">${k === "blank" ? "×" : k === "easy" ? "1" : k === "mid" ? "2" : "3"}</text></g>`;
+  }).join("");
+  // жолобки між гніздами — як на справжньому барабані
+  const flutes = [0, 1, 2, 3, 4, 5].map((i) => {
+    const a = (i * 60 - 60) * Math.PI / 180;
+    return `<ellipse cx="${(100 + 82 * Math.cos(a)).toFixed(1)}" cy="${(100 + 82 * Math.sin(a)).toFixed(1)}" rx="7" ry="13" transform="rotate(${i * 60 - 60 + 90} ${(100 + 82 * Math.cos(a)).toFixed(1)} ${(100 + 82 * Math.sin(a)).toFixed(1)})" fill="#2A1D5C"/>`;
+  }).join("");
+  const style = spinning
+    ? `--rot:${target}deg;--dur:${SPIN_MS}ms;animation-delay:-${Math.min(elapsed, SPIN_MS)}ms`
+    : `transform:rotate(${done ? target : 0}deg)`;
   return `<div class="barrel-wrap">
-    <div class="barrel ${spinning ? "spinning" : ""}" id="barrel">
-      <svg viewBox="0 0 200 200">
-        <circle cx="100" cy="100" r="95" fill="#0E0A24" stroke="#FFA41B" stroke-width="6"/>
-        ${[0, 1, 2, 3, 4, 5].map((i) => {
-          const a = (i * 60 - 90) * Math.PI / 180;
-          return `<circle cx="${100 + 55 * Math.cos(a)}" cy="${100 + 55 * Math.sin(a)}" r="22" fill="#2A1D5C" stroke="#E5007D" stroke-width="4"/>`;
-        }).join("")}
-        <circle cx="100" cy="100" r="16" fill="#FFF3DC"/>
+    <div class="barrel ${done ? "landed" : ""}">
+      <svg class="pin" viewBox="0 0 40 30" aria-hidden="true"><path d="M2 2 H38 L20 28 Z" fill="#FFF3DC" stroke="#0E0A24" stroke-width="4" stroke-linejoin="round"/></svg>
+      <svg class="cyl ${spinning ? "spinning" : ""}" viewBox="0 0 200 200" style="${style}" role="img" aria-label="Барабан">
+        <circle cx="100" cy="100" r="96" fill="#3B2D78" stroke="#0E0A24" stroke-width="6"/>
+        ${flutes}
+        ${chambers}
+        <circle cx="100" cy="100" r="15" fill="#FFA41B" stroke="#0E0A24" stroke-width="4"/>
       </svg>
     </div>
-    ${result ? `<div class="barrel-result lvl-${result}">${LEVEL_ICON[result]} ${LEVEL_UA[result]}${result === "blank" ? " — без питання, +" + money(CFG.BLANK_REWARD) : ""}</div>` : ""}
+    <div class="barrel-legend"><span>× холосте</span><span>1 легке</span><span>2 середнє</span><span>3 смертельне</span></div>
+    ${result ? `<div class="barrel-result lvl-${result}">${LEVEL_ICON[result]} ${LEVEL_UA[result]}${result === "blank" ? " — без питання, +" + money(CFG.BLANK_REWARD) : ""}</div>` : spinning ? `<div class="barrel-result dim">Барабан крутиться…</div>` : ""}
   </div>`;
 }
 function questionBodyHTML(q, forRole, myAnswer) {
@@ -595,8 +638,8 @@ function renderProjector(app) {
   if (!s.phase || s.phase === "lobby") {
     main = `<div class="proj-lobby">
       <h1 class="title-big">ПЛАН ЧИ ПРОГНОЗ</h1>
-      <div class="subtitle">Збирайте свої картелі, компаньєрос!</div>
-      <div class="qr-box"><div id="qrcode"></div><div class="qr-url">${esc(playURL)}</div></div>
+      <div class="lobby-grid"><div class="qr-box"><div id="qrcode"></div><div class="qr-url">${esc(playURL)}</div></div>
+      <div class="lobby-rules"><h2>Як грати</h2>${RULES_HTML}</div></div>
       <div class="lobby-teams">${TEAM_DEFS.map((d) => {
         const ms = teamMembers(d.id);
         return `<div class="lob-team" style="--tc:${d.color}"><div class="lt-head">${d.icon} ${esc((teams()[d.id] || d).name)}</div>
@@ -616,7 +659,7 @@ function renderProjector(app) {
     const t = s.turnTeam ? teams()[s.turnTeam] : null;
     const d = s.turnTeam ? TEAM_DEFS.find((x) => x.id === s.turnTeam) : null;
     let center = "";
-    if (s.phase === "turn") center = `<div class="center-msg">${d ? d.icon : ""} Хід картелю <b style="color:${d ? d.color : "#fff"}">«${t ? esc(t.name) : ""}»</b><br><span class="dim">Капітан обирає стрільця…</span></div>${territoriesHTML(false)}`;
+    if (s.phase === "turn") center = `<div class="center-msg">${d ? d.icon : ""} Ходить <b style="color:${d ? d.color : "#fff"}">${t ? esc(t.name) : ""}</b><br><span class="dim">Капітан обирає на телефоні, хто відповідатиме</span></div>${territoriesHTML(false)}`;
     if (s.phase === "spin") {
       const shooterName = s.shooter && players()[s.shooter] ? players()[s.shooter].name : "?";
       center = (s.spin && s.spin.status !== "idle") ? barrelHTML() : `<div class="center-msg">🔫 Стрілець — <b>${esc(shooterName)}</b><br><span class="dim">Обирає територію та крутить барабан…</span></div>${territoriesHTML(false)}`;
@@ -664,7 +707,7 @@ function renderProjector(app) {
     main = `<div class="proj-game">
       <div class="proj-top"><span class="round-badge">Раунд ${s.round || "—"}/${CFG.ROUNDS}</span><span class="title-small">План чи Прогноз</span><span id="timer" class="timer"></span></div>
       <div class="proj-main">${center}</div>
-      <div class="proj-side">${leaderboardHTML(true)}<div class="log-box">${Object.values(S.log || {}).sort((a, b) => b.t - a.t).slice(0, 6).map((l) => `<div class="log-line">${esc(l.msg)}</div>`).join("")}</div></div>
+      <div class="proj-side">${queueHTML()}${leaderboardHTML(true)}<div class="log-box">${Object.values(S.log || {}).sort((a, b) => b.t - a.t).slice(0, 6).map((l) => `<div class="log-line">${esc(l.msg)}</div>`).join("")}</div></div>
     </div>`;
   }
   app.innerHTML = `<div class="papel"></div>` + main;
@@ -705,8 +748,9 @@ function renderPlay(app) {
   let body = "";
   // --- лобі ---
   if (!s.phase || s.phase === "lobby") {
-    body = `<div class="center-msg">Ти в картелі!<br><span class="dim">Чекаємо на початок гри…</span></div>
-    ${isCap ? `<div class="cap-tools"><input id="tname" class="inp" maxlength="18" value="${esc(t.name)}"><button class="btn" id="rename">Перейменувати картель</button></div>` : ""}`;
+    body = `<div class="center-msg">Ти в команді «${esc(t.name)}»!<br><span class="dim">Чекаємо, поки викладач почне гру.</span></div>
+    ${isCap ? `<div class="cap-tools"><label class="small dim" for="tname">Ти капітан. Можеш дати команді назву:</label><input id="tname" class="inp" maxlength="18" value="${esc(t.name)}"><button class="btn" id="rename">Зберегти назву</button></div>` : ""}
+    <details class="rules-box"><summary>Як грати</summary>${RULES_HTML}</details>`;
   }
   // --- вибір стрільця (тільки капітан, свій хід) ---
   else if (s.phase === "turn" && myTurn && isCap) {
@@ -810,6 +854,7 @@ function renderPlay(app) {
       <span id="timer" class="timer"></span>
       <button class="exit" id="exitBtn" title="Вийти з команди">✕</button>
     </div>
+    ${nowBanner(s, tid, isCap, myTurn, shooter, silenced)}
     <div class="play-body">${body}</div>
     <div class="play-foot">${esc(m.name)}${isCap ? " 👑 капітан" : ""}${silenced ? " · 🤫 омерта" : ""} · точність: ${n ? Math.round((ok / n) * 100) + "%" : "—"}
     ${isCap && t.debt && (t.cash - t.debt) >= CFG.BAILOUT_AT ? `<button class="btn mini" id="payDebt">Погасити борг</button>` : ""}</div>
@@ -865,6 +910,26 @@ function renderPlay(app) {
   });
 }
 
+function nowBanner(s, tid, isCap, myTurn, shooter, silenced) {
+  const ph = s.phase; const other = s.turnTeam && teams()[s.turnTeam] ? teams()[s.turnTeam].name : "";
+  let txt = "";
+  if (!ph || ph === "lobby") txt = "Ти в грі. Чекай старту.";
+  else if (ph === "final") txt = "Гру завершено.";
+  else if (ph === "raid") txt = "Облава! Відповідай сам — ТАК чи НІ.";
+  else if (ph === "duel") txt = "Дуель двох команд — відповідає капітан, хто швидше.";
+  else if (ph === "lavado") txt = "Відмивання: команди з «брудними» грошима виконують завдання.";
+  else if (ph === "between") txt = "Раунд завершено. Чекай, що вирішить викладач.";
+  else if (myTurn) {
+    if (ph === "turn") txt = isCap ? "Ваш хід! Обери, хто відповідає." : "Ваш хід! Капітан обирає, хто відповідає.";
+    else if (ph === "spin") txt = shooter ? "Обери тему і крути барабан." : "Ваш гравець крутить барабан.";
+    else if (ph === "question") txt = shooter ? "Ти відповідаєш за команду. Порадься й натисни «Фінальна відповідь»." : silenced ? "Ти вже відповідав у цьому раунді — тільки слухай." : "Підкажи відповідачу: обери варіант і надішли пораду.";
+    else txt = "Дивись результат на проєкторі.";
+  } else {
+    if (ph === "question") txt = isCap ? `Відповідає «${other}». Можеш поставити на них.` : `Відповідає «${other}». Ваш капітан може зробити ставку.`;
+    else txt = `Зараз хід «${other}». Ваша черга буде пізніше в цьому раунді.`;
+  }
+  return `<div class="now-banner" role="status">${txt}</div>`;
+}
 function bindAnswerInputs(app, s) {
   const getQ = () => {
     if (s.phase === "lavado" && s.event) return LAVADO_POOL[s.event.qi];
@@ -906,13 +971,18 @@ function renderAdmin(app) {
   const s = st();
   const q = s.q ? qById(s.q.qid) : null;
   const playURL = location.origin + location.pathname + "?role=play&room=" + net.room;
+  const step = adminStep(s);
   const left = `
+    <div class="adm-box step-box">
+      <div class="adm-title">Що робити зараз</div>
+      <p class="step-text">${step.text}</p>
+      ${step.btn ? `<button class="btn big step-btn" id="aStep">${step.btn}</button>` : ""}
+    </div>
     <div class="adm-box">
       <div class="adm-title">Гра</div>
-      <button class="btn" id="aNew">🔄 Нова гра</button>
-      ${[1, 2, 3].map((r) => `<button class="btn ${s.round === r ? "cur" : ""}" id="aR${r}">Раунд ${r}</button>`).join("")}
-      <button class="btn" id="aNext">➡️ Наступний хід</button>
-      <button class="btn gold" id="aFinal">👑 ФІНАЛ І ПОДІУМ</button>
+      <button class="btn" id="aNext">⏭ Пропустити хід / наступний хід</button>
+      <button class="btn gold" id="aFinal">👑 Фінал і подіум</button>
+      <button class="btn" id="aNew">🔄 Нова гра (скинути все)</button>
     </div>
     <div class="adm-box">
       <div class="adm-title">Події Хефи</div>
@@ -979,7 +1049,7 @@ function renderAdmin(app) {
 
   // handlers
   $("#aNew").onclick = () => E.newGame();
-  [1, 2, 3].forEach((r) => $("#aR" + r).onclick = () => E.startRound(r));
+  $("#aStep") && ($("#aStep").onclick = () => step.act());
   $("#aNext").onclick = () => E.nextTurn();
   $("#aFinal").onclick = async () => { if (await uiConfirm("Оголосити фінал? Гра завершиться, на проєкторі з'явиться подіум.", "Оголосити фінал")) E.final(); };
   $("#aRaid").onclick = () => E.startRaid();
@@ -999,6 +1069,25 @@ function renderAdmin(app) {
   app.querySelectorAll("[data-adj]").forEach((b) => b.onclick = () => { const [tid, d] = b.dataset.adj.split("|"); E.applyMoney(tid, +d, false, `Хефа: «${teams()[tid].name}» ${+d > 0 ? "+" : ""}${money(+d)}`); });
   app.querySelectorAll("[data-paydebt]").forEach((b) => b.onclick = () => E.payDebt(b.dataset.paydebt));
   app.querySelectorAll("[data-cap]").forEach((elm) => elm.onclick = () => { const [tid, pid] = elm.dataset.cap.split("|"); net.set("teams/" + tid + "/captain", pid); });
+}
+function adminStep(s) {
+  const ph = s.phase; const r = s.round | 0; const n = activeTids().length;
+  const tname = s.turnTeam && teams()[s.turnTeam] ? "«" + esc(teams()[s.turnTeam].name) + "»" : "";
+  if (!ph || ph === "lobby") return n
+    ? { text: `Приєдналось команд: <b>${n}</b>. Коли всі студенти в командах — починайте.`, btn: "▶ Почати раунд 1", act: () => E.startRound(1) }
+    : { text: "Відкрийте проєктор і покажіть студентам QR-код. Тут з'являться команди, щойно хтось приєднається." };
+  if (ph === "turn") return { text: `Ходить ${tname}. Капітан на телефоні обирає, хто відповідає.`, btn: "⏭ Пропустити хід цієї команди", act: () => E.nextTurn() };
+  if (ph === "spin") return { text: `Гравець ${tname} обирає тему й крутить барабан.` };
+  if (ph === "question") { const q = s.q && qById(s.q.qid);
+    if (q && q.type === "oral") return { text: s.q.oralReady ? "Команда готова. Вислухайте відповідь, звірте зі шпаргалкою й оцініть кнопками нижче." : "Усне питання: команда готується. Таймер зупиниться, коли вони натиснуть «Готові»." };
+    return { text: `${tname} відповідає. Відповідь перевіриться сама, коли вони підтвердять або скінчиться час.`, btn: "Розкрити відповідь зараз", act: () => E.reveal() }; }
+  if (ph === "turn_end") return { text: "Обговоріть правильну відповідь на проєкторі, потім передайте хід далі.", btn: "➡️ Наступна команда", act: () => E.nextTurn() };
+  if (ph === "raid" || ph === "duel" || ph === "lavado") return { text: "Триває подія. Вона завершиться автоматично за таймером." };
+  if (ph === "between") return r < CFG.ROUNDS
+    ? { text: `Раунд ${r} завершено. За бажанням запустіть подію (облава, лотерея, дуель) або почніть наступний раунд.`, btn: `▶ Почати раунд ${r + 1}`, act: () => E.startRound(r + 1) }
+    : { text: "Усі раунди зіграно. Час оголосити переможця.", btn: "👑 Оголосити фінал", act: () => E.final() };
+  if (ph === "final") return { text: "Гру завершено. Скопіюйте таблицю оцінок у розділі «Сервіс»." };
+  return { text: "" };
 }
 function cheatAnswer(q) {
   if (q.type === "single") return "Відповідь: " + esc(q.opts[q.correct]);
