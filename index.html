@@ -283,6 +283,33 @@ body[data-role=projector] .barrel.lot{width:min(52vh,440px)}
 .center{text-align:center}
 .raid-teams{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px}
 @media (prefers-reduced-motion:reduce){.resume-bar span{animation:none}}
+/* — «все або нічого»: повноекранна сцена — */
+.nada-overlay{position:fixed;inset:0;z-index:50;background:rgba(14,10,36,.92);display:grid;place-items:center;overflow:hidden;text-align:center}
+.nada-overlay.win,.nada-overlay.lose{animation:nadaOut .6s ease-in forwards}
+@keyframes nadaOut{to{opacity:0;visibility:hidden}}
+.nada-box{position:relative;z-index:2;padding:16px;max-width:92vw}
+.nada-overlay .nada-title{color:var(--cempa);font-size:clamp(22px,4vw,40px)}
+.barrel.nada-drum{width:min(52vh,72vw,440px)}
+.nada-overlay.spin .barrel.nada-drum{animation:suspense .9s ease-in-out infinite}
+@keyframes suspense{50%{transform:scale(1.04)}}
+.nada-overlay.lose .barrel.nada-drum{animation:shake .5s cubic-bezier(.36,.07,.19,.97) 2}
+@keyframes shake{10%,90%{transform:translateX(-3px)}20%,80%{transform:translateX(6px)}30%,50%,70%{transform:translateX(-12px) rotate(-2deg)}40%,60%{transform:translateX(12px) rotate(2deg)}}
+.nada-big{font:400 clamp(44px,10vw,110px)/1 var(--disp);margin-top:14px;animation:slam .45s cubic-bezier(.2,1.8,.4,1) both}
+.nada-overlay.win .nada-big{color:#2FBF71;text-shadow:5px 5px 0 var(--ink)}
+.nada-overlay.lose .nada-big{color:#FF4D5E;text-shadow:5px 5px 0 var(--ink)}
+@keyframes slam{from{transform:scale(3);opacity:0}}
+.nada-sum{font:800 clamp(22px,4vw,38px) var(--body);color:var(--paper);margin-top:8px}
+.nada-wait{color:var(--paper-dim);font-size:clamp(16px,2.4vw,22px);margin-top:12px;animation:blink .7s infinite alternate}
+.nada-flash{position:absolute;inset:0;z-index:1;opacity:0;pointer-events:none}
+.nada-overlay.win .nada-flash{background:#2FBF71;animation:flash .7s ease-out}
+.nada-overlay.lose .nada-flash{background:#FFFFFF;animation:flash .5s ease-out}
+.nada-overlay.lose .nada-flash::after{content:"";position:absolute;inset:0;background:#E5007D;animation:flash .9s .15s ease-out both}
+@keyframes flash{0%{opacity:.9}100%{opacity:0}}
+.nada-rain{position:absolute;inset:0;z-index:1;pointer-events:none}
+.nada-rain span{position:absolute;top:-60px;animation:fall 1.8s linear both}
+@keyframes fall{to{transform:translateY(115vh) rotate(360deg)}}
+.nada-res{font-weight:800;font-size:20px;margin-top:10px}
+@media (prefers-reduced-motion:reduce){.nada-rain{display:none}.nada-overlay .barrel.nada-drum,.nada-big,.nada-flash,.nada-flash::after{animation:none}}
 /* — простий екран телефона — */
 .step-lbl{font-weight:800;color:var(--cempa);text-align:center;font-size:17px}
 .topic-list{display:flex;flex-direction:column;gap:10px}
@@ -336,10 +363,10 @@ body[data-role=projector] .barrel.lot{width:min(52vh,440px)}
 <script defer src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script defer src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script defer src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
-<script defer src="firebase-config.js?v=10"></script>
-<script defer src="net.js?v=10"></script>
-<script defer src="questions.js?v=10"></script>
-<script defer src="answers.enc.js?v=10"></script>
-<script defer src="app.js?v=10"></script>
+<script defer src="firebase-config.js?v=11"></script>
+<script defer src="net.js?v=11"></script>
+<script defer src="questions.js?v=11"></script>
+<script defer src="answers.enc.js?v=11"></script>
+<script defer src="app.js?v=11"></script>
 </body>
 </html>

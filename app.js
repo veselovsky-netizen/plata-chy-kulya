@@ -105,6 +105,8 @@ function snd(kind) {
     if (kind === "rtick") { beep(1700, 0, 0.015, "square", 0.05); beep(150, 0, 0.025, "sine", 0.07); }
     if (kind === "blank") { beep(500, 0, 0.05); beep(300, 0.07, 0.08); }
     if (kind === "shot") { noise(0, 0.25, 0.35); beep(90, 0, 0.3, "sawtooth", 0.25); }
+    if (kind === "bang") { beep(1200, 0, 0.03, "square", 0.12); noise(0.06, 0.6, 0.6); beep(70, 0.06, 0.6, "sawtooth", 0.35); beep(45, 0.2, 0.7, "sine", 0.3); }
+    if (kind === "clack") { beep(1200, 0, 0.03, "square", 0.12); beep(500, 0.08, 0.05); beep(300, 0.15, 0.08); for (let i = 0; i < 6; i++) beep(660 + i * 110, 0.35 + i * 0.08, 0.12, "triangle", 0.16); }
     if (kind === "win") { beep(523, 0, 0.12, "triangle", 0.18); beep(659, 0.12, 0.12, "triangle", 0.18); beep(784, 0.24, 0.25, "triangle", 0.2); }
     if (kind === "lose") { beep(220, 0, 0.2, "sawtooth", 0.15); beep(160, 0.2, 0.35, "sawtooth", 0.15); }
     if (kind === "siren") for (let i = 0; i < 4; i++) { beep(700, i * 0.4, 0.2, "triangle", 0.2); beep(950, i * 0.4 + 0.2, 0.2, "triangle", 0.2); }
@@ -113,12 +115,22 @@ function snd(kind) {
   } catch (e) {}
 }
 let lastSndKey = "";
+let lastNadaKey = "";
+function nadaPhoneFx() {
+  const rd = st().revealData; const nd = rd && rd.nada; const m = me();
+  if (!nd || !m || m.team !== rd.team) return;
+  const key = nd.ts + nd.status; if (key === lastNadaKey) return; lastNadaKey = key;
+  if (nd.status === "done") {
+    snd(nd.win ? "clack" : "bang");
+    if (navigator.vibrate) try { navigator.vibrate(nd.win ? [40, 60, 40] : [300, 80, 300]); } catch (e) {}
+  }
+}
 function soundFromState() {
   const s = st();
   const nd = s.revealData && s.revealData.nada; const ev = s.event;
   const key = (s.spin ? s.spin.status + (s.spin.result || "") : "") + "|" + (s.phase || "") + "|" + (s.revealData ? s.revealData.ts : "") + "|" + (nd ? nd.status : "") + "|" + (ev ? ev.kind + (ev.applied ? 1 : 0) : "");
   if (key === lastSndKey) return;
-  if (nd) { lastSndKey = key; snd(nd.status === "spinning" ? "spin" : nd.win ? "win" : "shot"); return; }
+  if (nd) { lastSndKey = key; snd(nd.status === "spinning" ? "spin" : nd.win ? "clack" : "bang"); return; }
   if (s.phase === "loteria" && ev) { lastSndKey = key; snd(ev.applied ? "coin" : "spin"); return; }
   if (key === lastSndKey) return; lastSndKey = key;
   if (s.phase === "spin" && s.spin && s.spin.status === "spinning") snd("spin");
@@ -602,7 +614,7 @@ function boot() {
       const sig = JSON.stringify({ ...S, state: rest });
       if (sig === lastSig) return; lastSig = sig;
     }
-    render(); if (ROLE === "projector") soundFromState(); if (ROLE === "admin") processActions(S.actions); });
+    render(); if (ROLE === "projector") soundFromState(); if (ROLE === "play") nadaPhoneFx(); if (ROLE === "admin") processActions(S.actions); });
   document.addEventListener("click", () => { if (!audio && AC) try { audio = new AC(); } catch (e) {} }, { once: true });
   if (window.requestAnimationFrame) requestAnimationFrame(barrelLoop);
   if (ROLE === "projector") setInterval(renderTimerOnly, 500);
@@ -760,18 +772,26 @@ function barrelHTML() {
     <div class="barrel-legend"><span><b>×</b> холосте: гроші без питання</span><span><b>1</b> легке</span><span><b>2</b> середнє</span><span><b>3</b> смертельне</span></div>
   </div>`;
 }
-// «Все або нічого» — барабан з кулями
+// «Все або нічого» — барабан з кулями на весь екран: напруга → постріл/клацання → спалах і дощ
 function nadaHTML(rd) {
   const nd = rd.nada || {};
   const items = NADA_CH.map((k) => k === "x2" ? { t: "×2", fill: "#2FBF71" } : { t: "💀", fill: "#E5007D", big: true });
   const mine = ROLE === "play" && (teams()[rd.team] || {}).captain === myPid;
   const done = nd.status === "done";
-  return `<div class="barrel-wrap nada-wrap">
-    <div class="nada-title">🔫 ВСЕ АБО НІЧОГО</div>
-    ${drumHTML({ items, idx: nd.idx | 0, ts: nd.ts, spinning: nd.status === "spinning", done, mine, cls: "small", landCls: nd.win ? "lvl-easy" : "lvl-deadly" })}
-    ${done ? `<div class="barrel-result ${nd.win ? "lvl-easy" : "lvl-deadly"}">${nd.win ? "×2! Виграш подвоєно: +" + money(rd.delta) : "💀 Куля! Виграш згорів: −" + money(rd.delta)}</div>`
-      : `<div class="barrel-result dim">4 холостих — ×2, 2 кулі — виграш згорає…</div>`}
-  </div>`;
+  const doneAt = (nd.ts || 0) + SPIN_MS + 150;
+  const hideIn = Math.max(0, doneAt + 4500 - net.now()); // оверлей сам зникає через 4,5 с після пострілу
+  const rain = done ? Array.from({ length: 22 }, (_, i) =>
+    `<span style="left:${(i * 47) % 100}%;animation-delay:${((i * 137) % 1100) / 1000}s;font-size:${26 + (i * 7) % 22}px">${nd.win ? (i % 3 ? "💵" : "💰") : (i % 2 ? "💥" : "💀")}</span>`).join("") : "";
+  const tname = esc((teams()[rd.team] || {}).name || "");
+  const overlay = `<div class="nada-overlay ${done ? (nd.win ? "win" : "lose") : "spin"}" ${done ? `style="animation-delay:${hideIn}ms"` : ""}>
+    <div class="nada-flash"></div>${rain ? `<div class="nada-rain">${rain}</div>` : ""}
+    <div class="nada-box">
+      <div class="nada-title">🔫 ВСЕ АБО НІЧОГО · «${tname}»</div>
+      ${drumHTML({ items, idx: nd.idx | 0, ts: nd.ts, spinning: nd.status === "spinning", done, mine, cls: "nada-drum", landCls: nd.win ? "lvl-easy" : "lvl-deadly" })}
+      ${done ? `<div class="nada-big">${nd.win ? "КЛАЦ! ХОЛОСТЕ" : "БАХ! КУЛЯ"}</div><div class="nada-sum">${nd.win ? "Виграш ×2: +" : "Виграш згорів: −"}${money(rd.delta)}</div>`
+        : `<div class="nada-wait">4 холостих — ×2 · 2 кулі — все згорає</div>`}
+    </div></div>`;
+  return (done && hideIn === 0 ? "" : overlay) + (done ? `<div class="nada-res">🔫 ${nd.win ? "Холосте — виграш ×2: +" : "Куля — виграш згорів: −"}${money(rd.delta)}</div>` : "");
 }
 // Лотерея — колесо з картками
 function loteriaHTML(ev) {
