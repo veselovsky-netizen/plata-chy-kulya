@@ -267,6 +267,21 @@ body[data-role=projector] .barrel{width:min(56vh,480px)}
 .barrel-result{display:inline-block;padding:6px 18px;border-radius:10px;border:3px solid var(--ink);background:var(--paper);color:var(--ink);animation:pop .45s cubic-bezier(.2,1.6,.4,1)}
 .barrel-result.lvl-easy{background:#2FBF71}.barrel-result.lvl-mid{background:#FFA41B}.barrel-result.lvl-deadly{background:#E5007D;color:#FFF3DC}
 .barrel-result.dim{font-size:20px;font-family:var(--body);color:var(--paper-dim);background:none;border:0;animation:blink .6s infinite alternate}
+/* — все або нічого / лотерея / продовження — */
+.nada-title{font:400 26px var(--disp);color:var(--cempa);text-align:center;margin:10px 0 2px}
+.barrel.small{width:min(34vh,240px)}
+body[data-role=projector] .barrel.small{width:min(40vh,340px)}
+.barrel.lot{width:min(40vh,300px)}
+body[data-role=projector] .barrel.lot{width:min(52vh,440px)}
+.reveal .barrel-wrap{margin-top:10px}.reveal .barrel-result{font-size:20px}
+.nada-offer{margin-top:12px;font-size:15px;line-height:1.35}
+.lot-wrap .loteria-card{margin:14px auto 0}
+.resume-bar{height:8px;border-radius:99px;background:rgba(255,243,220,.18);overflow:hidden;margin:16px auto 6px;max-width:420px;width:100%}
+.resume-bar span{display:block;height:100%;background:var(--cempa);transform-origin:left;animation-name:drain;animation-timing-function:linear;animation-fill-mode:both}
+@keyframes drain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+.center{text-align:center}
+.raid-teams{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px}
+@media (prefers-reduced-motion:reduce){.resume-bar span{animation:none}}
 /* — простий екран телефона — */
 .step-lbl{font-weight:800;color:var(--cempa);text-align:center;font-size:17px}
 .topic-list{display:flex;flex-direction:column;gap:10px}
@@ -320,10 +335,10 @@ body[data-role=projector] .barrel{width:min(56vh,480px)}
 <script defer src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
 <script defer src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script defer src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
-<script defer src="firebase-config.js?v=8"></script>
-<script defer src="net.js?v=8"></script>
-<script defer src="questions.js?v=8"></script>
-<script defer src="answers.enc.js?v=8"></script>
-<script defer src="app.js?v=8"></script>
+<script defer src="firebase-config.js?v=9"></script>
+<script defer src="net.js?v=9"></script>
+<script defer src="questions.js?v=9"></script>
+<script defer src="answers.enc.js?v=9"></script>
+<script defer src="app.js?v=9"></script>
 </body>
 </html>

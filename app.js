@@ -19,7 +19,11 @@ const CFG = {
   DUEL_PRIZE: 800,
   BAILOUT_AT: 300, BAILOUT_GIVE: 2000, BAILOUT_DEBT: 2600,
   TERR_BONUS: 1000,
+  RESULT_SHOW_MS: 8000, // скільки показувати результат події перед автопродовженням
 };
+// «Все або нічого»: 4 холостих — виграш ×2, 2 кулі — виграш згорає
+const NADA_CH = ["x2", "bullet", "x2", "x2", "bullet", "x2"];
+const EVENT_OK_PHASES = ["between", "turn", "turn_end", "event_result"];
 const TEAM_DEFS = [
   { id: "c1", name: "Команда 1", icon: "🔴", color: "#FF4D5E" },
   { id: "c2", name: "Команда 2", icon: "🟠", color: "#FF8A1F" },
@@ -111,12 +115,16 @@ function snd(kind) {
 let lastSndKey = "";
 function soundFromState() {
   const s = st();
-  const key = (s.spin ? s.spin.status + (s.spin.result || "") : "") + "|" + (s.phase || "") + "|" + (s.revealData ? s.revealData.ts : "");
+  const nd = s.revealData && s.revealData.nada; const ev = s.event;
+  const key = (s.spin ? s.spin.status + (s.spin.result || "") : "") + "|" + (s.phase || "") + "|" + (s.revealData ? s.revealData.ts : "") + "|" + (nd ? nd.status : "") + "|" + (ev ? ev.kind + (ev.applied ? 1 : 0) : "");
+  if (key === lastSndKey) return;
+  if (nd) { lastSndKey = key; snd(nd.status === "spinning" ? "spin" : nd.win ? "win" : "shot"); return; }
+  if (s.phase === "loteria" && ev) { lastSndKey = key; snd(ev.applied ? "coin" : "spin"); return; }
   if (key === lastSndKey) return; lastSndKey = key;
-  if (s.spin && s.spin.status === "spinning") snd("spin");
-  else if (s.spin && s.spin.status === "done") snd(s.spin.result === "blank" ? "blank" : "shot");
+  if (s.phase === "spin" && s.spin && s.spin.status === "spinning") snd("spin");
+  else if (s.phase === "spin" && s.spin && s.spin.status === "done") snd(s.spin.result === "blank" ? "blank" : "shot");
   if (s.phase === "raid") snd("siren");
-  if (s.revealData && net.now() - s.revealData.ts < 3000) snd(s.revealData.ok >= 0.5 ? "win" : "lose");
+  if (s.phase === "turn_end" && s.revealData && net.now() - s.revealData.ts < 3000) snd(s.revealData.ok >= 0.5 ? "win" : "lose");
 }
 
 // ============================================================
@@ -263,7 +271,7 @@ const E = {
   startRound(r) {
     if (!activeTids().length) { uiToast("Ще ніхто не приєднався. Покажіть студентам QR-код на проєкторі й дочекайтеся команд."); return; }
     net.set("state/turnsTaken/" + r, null); // повторний запуск раунду — з чистого аркуша
-    net.update("", { "state/phase": "turn", "state/round": r, "state/turnTeam": null, "state/q": null, "state/spin": null, "state/revealData": null, "state/event": null });
+    net.update("", { "state/phase": "turn", "state/round": r, "state/turnTeam": null, "state/q": null, "state/spin": null, "state/revealData": null, "state/event": null, "state/resume": null, "state/resumeAt": null });
     log(`— РАУНД ${r} —`);
     E.nextTurn(r);
   },
@@ -383,20 +391,46 @@ const E = {
     net.update("teams/" + tid, { cash: (t.cash | 0) - t.debt, debt: 0 });
     log(`«${t.name}» погасили борг ${money(t.debt)} 💪`);
   },
-  // --- Все або нічого ---
+  // --- Все або нічого: барабан ---
   nada(tid) {
     const rd = st().revealData; if (!rd || rd.team !== tid || !rd.canNada) return;
-    const win = Math.random() < 0.5; const t = teams()[tid]; const amt = rd.delta;
-    const field = rd.dirty ? "dirty" : "cash";
-    net.set("teams/" + tid + "/" + field, Math.max(0, (t[field] | 0) + (win ? amt : -amt)));
-    log(win ? `🪙 Все або нічого: «${t.name}» подвоюють! +${money(amt)}` : `🪙 Все або нічого: «${t.name}» втрачають виграш −${money(amt)}`);
-    net.update("state", { revealData: { ...rd, canNada: false, nada: { win, ts: net.now() } } });
+    const idx = Math.floor(Math.random() * NADA_CH.length);
+    const ts = net.now();
+    net.update("state", { revealData: { ...rd, canNada: false, nada: { status: "spinning", idx, ts } } });
+    setTimeout(() => {
+      const win = NADA_CH[idx] === "x2"; const t = teams()[tid]; const amt = rd.delta;
+      const field = rd.dirty ? "dirty" : "cash";
+      net.set("teams/" + tid + "/" + field, Math.max(0, (t[field] | 0) + (win ? amt : -amt)));
+      log(win ? `🔫 Все або нічого: «${t.name}» — холосте, виграш ×2! +${money(amt)}` : `🔫 Все або нічого: «${t.name}» — куля! Виграш згорів −${money(amt)}`);
+      const cur = st().revealData || rd;
+      net.update("state", { revealData: { ...cur, canNada: false, nada: { status: "done", idx, ts, win } } });
+    }, SPIN_MS + 150);
+  },
+  // --- події: збереження ходу і продовження ---
+  canEvent() { return EVENT_OK_PHASES.includes(st().phase); },
+  beginEvent(stateUpd) {
+    const s = st();
+    const resume = s.resume || (s.phase === "event_result" ? { phase: "between" } : { phase: s.phase, turnTeam: s.turnTeam || null });
+    net.update("state", { ...stateUpd, resume, resumeAt: null });
+  },
+  finishEvent(event) {
+    net.update("state", { phase: "event_result", event: { ...event, ts: net.now() }, resumeAt: net.now() + CFG.RESULT_SHOW_MS });
+  },
+  resume() {
+    const s = st(); const r = s.resume || { phase: "between" };
+    net.update("state", { resume: null, resumeAt: null, event: null });
+    if (r.phase === "turn" && r.turnTeam && teams()[r.turnTeam]) net.update("state", { phase: "turn", turnTeam: r.turnTeam, shooter: null, q: null, spin: null, revealData: null });
+    else if (r.phase === "turn_end") E.nextTurn();
+    else net.update("state", { phase: "between", turnTeam: null, q: null, spin: null });
   },
   // --- Облава ---
-  startRaid() {
-    const qi = Math.floor(Math.random() * RAID_POOL.length);
+  startRaid(force) {
+    if (!force && !E.canEvent()) { uiToast("Подію можна запустити між ходами"); return; }
+    const used = st().usedRaid || {};
+    let pool = RAID_POOL.map((q, i) => i).filter((i) => !used[i]); if (!pool.length) pool = RAID_POOL.map((q, i) => i);
+    const qi = pool[Math.floor(Math.random() * pool.length)];
     net.set("raidVotes", null);
-    net.update("state", { phase: "raid", event: { kind: "raid", qi, deadline: net.now() + CFG.RAID_TIME * 1000, id: "raid" + net.now() } });
+    E.beginEvent({ phase: "raid", ["usedRaid/" + qi]: true, event: { kind: "raid", qi, deadline: net.now() + CFG.RAID_TIME * 1000, id: "raid" + net.now() } });
     log("🚔 Облава! 30 секунд на відповідь кожному!");
   },
   endRaid() {
@@ -413,13 +447,20 @@ const E = {
       const d = perTeam[tid].ok * CFG.RAID_OK - perTeam[tid].bad * CFG.RAID_BAD;
       E.applyMoney(tid, d, false, `🚔 «${teams()[tid].name}»: ${perTeam[tid].ok}✓/${perTeam[tid].bad}✗ → ${d >= 0 ? "+" : ""}${money(d)}`);
     }
-    net.update("state", { phase: "between", event: { kind: "raid_result", qi: ev.qi, a: ans, expl: SEC.raid[ev.qi].expl, perTeam, ts: net.now() } });
+    E.finishEvent({ kind: "raid_result", qi: ev.qi, a: ans, expl: SEC.raid[ev.qi].expl, perTeam, votes: rv });
   },
-  // --- Лотерея ---
+  // --- Лотерея: колесо крутиться, ефект — після зупинки ---
   loteria() {
-    const c = LOTERIA_CARDS[Math.floor(Math.random() * LOTERIA_CARDS.length)];
-    net.update("state", { event: { kind: "loteria", card: c, ts: net.now() } });
-    log(`🎴 Лотерея: ${c.icon} ${c.name} — ${c.text}`);
+    if (!E.canEvent()) { uiToast("Подію можна запустити між ходами"); return; }
+    const ci = Math.floor(Math.random() * LOTERIA_CARDS.length);
+    const id = "lot" + net.now();
+    E.beginEvent({ phase: "loteria", event: { kind: "loteria", ci, ts: net.now(), id, applied: false } });
+    setTimeout(() => E.applyLoteria(ci, id), SPIN_MS + 200);
+  },
+  applyLoteria(ci, id) {
+    const ev = st().event; if (!ev || ev.id !== id || ev.applied) return;
+    const c = LOTERIA_CARDS[ci];
+    log(`🎴 Лотерея: ${c.icon} ${c.ua || c.name} — ${c.text}`);
     const ts = teams(); const ids = activeTids();
     const sorted = [...ids].sort((a, b) => netWorth(ts[b]) - netWorth(ts[a]));
     if (c.name === "El Dinero") for (const tid of ids) if (!ts[tid].debt) E.applyMoney(tid, 800, false, null);
@@ -427,21 +468,24 @@ const E = {
     if (c.name === "El Diablo") for (const tid of ids) E.applyMoney(tid, -Math.round(ts[tid].cash * 0.1), false, null);
     if (c.name === "El Sol" && sorted.length) E.applyMoney(sorted[sorted.length - 1], 1200, false, null);
     if (c.name === "El Banco") for (const tid of ids) if (ts[tid].dirty) { E.applyMoney(tid, ts[tid].dirty, false, null); net.set("teams/" + tid + "/dirty", 0); }
-    if (c.name === "La Policía") setTimeout(() => E.startRaid(), 3500);
     if (c.name === "El Tren") { const d = {}; for (const tid of ids) d[tid] = true; net.set("state/doubleNext", d); }
     if (c.name === "La Corona" && sorted.length > 1) {
       const lead = sorted[0], last = sorted[sorted.length - 1]; const amt = Math.min(500, ts[lead].cash | 0);
       E.applyMoney(lead, -amt, false, null); E.applyMoney(last, amt, false, `👑 «${ts[lead].name}» віддають ${money(amt)} команді «${ts[last].name}»`);
     }
+    // картку показуємо як результат; «Облава» одразу запускає облаву
+    net.update("state", { event: { ...ev, applied: true }, phase: "loteria", resumeAt: c.name === "La Policía" ? null : net.now() + CFG.RESULT_SHOW_MS });
+    if (c.name === "La Policía") setTimeout(() => { const e2 = st().event; if (e2 && e2.id === id) E.startRaid(true); }, 3500);
   },
   // --- Дуель ---
   startDuel(t1, t2) {
+    if (!E.canEvent()) { uiToast("Подію можна запустити між ходами"); return; }
     const used = st().usedDuel || {};
     const pool = DUEL_POOL.map((q, i) => i).filter((i) => !used[i]);
     if (!pool.length) { uiToast("Дуельні питання вичерпано"); return; }
     const qi = pool[Math.floor(Math.random() * pool.length)];
     net.set("duelAns", null);
-    net.update("state", { phase: "duel", ["usedDuel/" + qi]: true, event: { kind: "duel", qi, t1, t2, deadline: net.now() + 20000, id: "duel" + net.now() } });
+    E.beginEvent({ phase: "duel", ["usedDuel/" + qi]: true, event: { kind: "duel", qi, t1, t2, deadline: net.now() + 20000, id: "duel" + net.now() } });
     log(`⚔️ Дуель: «${teams()[t1].name}» проти «${teams()[t2].name}»!`);
   },
   endDuel() {
@@ -455,17 +499,18 @@ const E = {
       E.applyMoney(loser, -prize, false, null);
       E.applyMoney(winner, prize, false, `⚔️ «${teams()[winner].name}» виграли дуель: +${money(prize)} від суперника`);
     } else log("⚔️ Дуель без переможця — обидві команди промахнулися");
-    net.update("state", { phase: "between", event: { kind: "duel_result", winner, correct: DUEL_POOL[ev.qi].opts[correct], ts: net.now() } });
+    E.finishEvent({ kind: "duel_result", winner, t1: ev.t1, t2: ev.t2, correct: DUEL_POOL[ev.qi].opts[correct] });
   },
   // --- Відмивання ---
   startLavado() {
+    if (!E.canEvent()) { uiToast("Подію можна запустити між ходами"); return; }
     const dirtyTeams = activeTids().filter((tid) => (teams()[tid].dirty | 0) > 0);
     if (!dirtyTeams.length) { uiToast("Брудних грошей зараз ні в кого немає"); return; }
     const used = st().usedLavado || {};
     const pool = LAVADO_POOL.map((q, i) => i).filter((i) => !used[i]);
     const qi = pool.length ? pool[Math.floor(Math.random() * pool.length)] : Math.floor(Math.random() * LAVADO_POOL.length);
     net.set("lavAns", null);
-    net.update("state", { phase: "lavado", ["usedLavado/" + qi]: true, event: { kind: "lavado", qi, teams: dirtyTeams, deadline: net.now() + 90000, id: "lav" + net.now() } });
+    E.beginEvent({ phase: "lavado", ["usedLavado/" + qi]: true, event: { kind: "lavado", qi, teams: dirtyTeams, deadline: net.now() + 90000, id: "lav" + net.now() } });
     log("🧺 Відмивання: команди з брудними грошима виконують завдання!");
   },
   endLavado() {
@@ -477,7 +522,7 @@ const E = {
       if (f >= 0.999) { E.applyMoney(tid, t.dirty, false, `🧺 «${t.name}» відмили ${money(t.dirty)}!`); net.set("teams/" + tid + "/dirty", 0); res[tid] = "ok"; }
       else { const lost = Math.round(t.dirty / 2); net.set("teams/" + tid + "/dirty", t.dirty - lost); log(`🧺 «${t.name}» спалилися: конфісковано ${money(lost)}`); res[tid] = "fail"; }
     }
-    net.update("state", { phase: "between", event: { kind: "lavado_result", res, answer: answerText(q, sec, false), expl: sec.expl, ts: net.now() } });
+    E.finishEvent({ kind: "lavado_result", res, answer: answerText(q, sec, false), expl: sec.expl });
   },
   // --- Фінал ---
   final() {
@@ -488,7 +533,7 @@ const E = {
       const total = (t.cash | 0) - (t.debt | 0) + terrs.length * CFG.TERR_BONUS; // брудні гроші у фінал НЕ йдуть
       return { tid, name: t.name, cash: t.cash | 0, dirty: t.dirty | 0, debt: t.debt | 0, terrs, total };
     }).sort((a, b) => b.total - a.total);
-    net.update("state", { phase: "final", event: null, finalData: { rows, terrOwner, ts: net.now() } });
+    net.update("state", { phase: "final", event: null, resume: null, resumeAt: null, finalData: { rows, terrOwner, ts: net.now() } });
     log(`👑 Фінал! Переможець — «${rows[0] ? rows[0].name : "?"}»`);
   },
   // --- Таблиця оцінок (табуляція — вставляється в Excel і Google Таблиці по колонках) ---
@@ -507,17 +552,39 @@ const E = {
   },
 };
 
-// авто-таймери, дії з телефонів і «пульс» рушія (лише пульт)
+// авто-таймери, дії з телефонів і «пульс» рушія (лише пульт).
+// Тікає з Web Worker: у фоновій вкладці звичайні таймери браузер гальмує до 1 разу на хвилину,
+// через що облава чи питання «зависали». Воркер так не гальмується.
+function adminTick() {
+  engineHeartbeat();
+  if (!SEC || !engineIsMine()) return;
+  const s = st(); const now = net.now(); const ev = s.event;
+  if (s.phase === "question" && s.q && !s.q.paused && s.q.deadline && now > s.q.deadline) { const q = qById(s.q.qid); if (q.type !== "oral") E.reveal(); }
+  if (s.phase === "raid" && ev) {
+    const ps = Object.keys(players()).filter((pid) => players()[pid].team);
+    const allIn = ps.length && ps.every((pid) => (S.raidVotes || {})[pid] != null);
+    if (now > ev.deadline || allIn) E.endRaid();
+  }
+  if (s.phase === "duel" && ev) {
+    const da = S.duelAns || {};
+    if (now > ev.deadline || (da[ev.t1] && da[ev.t2])) E.endDuel();
+  }
+  if (s.phase === "lavado" && ev) {
+    const la = S.lavAns || {};
+    if (now > ev.deadline || (ev.teams || []).every((t) => la[t])) E.endLavado();
+  }
+  const resumable = s.phase === "event_result" || (s.phase === "loteria" && ev && ev.applied);
+  if (resumable && s.resumeAt && now > s.resumeAt) E.resume();
+  // лотерея: якщо ефект не застосувався (вкладку пульта перезавантажили під час обертання)
+  if (s.phase === "loteria" && ev && !ev.applied && now - ev.ts > SPIN_MS + 1500) E.applyLoteria(ev.ci, ev.id);
+}
 if (ROLE === "admin") {
-  setInterval(() => {
-    engineHeartbeat();
-    if (!SEC || !engineIsMine()) return;
-    const s = st(); const now = net.now();
-    if (s.phase === "question" && s.q && !s.q.paused && s.q.deadline && now > s.q.deadline) { const q = qById(s.q.qid); if (q.type !== "oral") E.reveal(); }
-    if (s.phase === "raid" && s.event && now > s.event.deadline) E.endRaid();
-    if (s.phase === "duel" && s.event && now > s.event.deadline) E.endDuel();
-    if (s.phase === "lavado" && s.event && now > s.event.deadline) E.endLavado();
-  }, 700);
+  let ticking = false;
+  const tick = () => { if (ticking) return; ticking = true; try { adminTick(); } finally { ticking = false; } };
+  try {
+    const wk = new Worker(URL.createObjectURL(new Blob(["setInterval(function(){postMessage(0)},500)"], { type: "text/javascript" })));
+    wk.onmessage = tick;
+  } catch (e) { setInterval(tick, 700); }
 }
 
 // ============================================================
@@ -636,82 +703,107 @@ function territoriesHTML(clickable) {
 }
 // Кут барабана від часу (синхронно на всіх екранах за серверним часом).
 // Розгін-гальмування з «тріскачкою» (гнізда перескакують клацанням) і пружною зупинкою.
-function barrelTarget(idx) { return 360 * 5 + ((360 - idx * 60) % 360); }
-function barrelAngle(idx, elapsed) {
-  const T = barrelTarget(idx), D = SPIN_MS, p1 = 0.8;
+function barrelTarget(idx, n = 6) { const st = 360 / n; return 360 * 5 + ((360 - idx * st) % 360); }
+function barrelAngle(idx, elapsed, n = 6) {
+  const T = barrelTarget(idx, n), D = SPIN_MS, p1 = 0.8, stp = 360 / n;
   const p = Math.max(0, Math.min(1, elapsed / D));
   if (p >= 1) return T;
   if (p < p1) {
     const x = p / p1;
     const a = T * (1 - Math.pow(1 - x, 3));
     const slow = Math.max(0, Math.min(1, (x - 0.5) / 0.5));
-    const seg = Math.floor(a / 60), f = a / 60 - seg;
-    return 60 * (seg + f + slow * (Math.pow(f, 4) - f));
+    const seg = Math.floor(a / stp), f = a / stp - seg;
+    return stp * (seg + f + slow * (Math.pow(f, 4) - f));
   }
   const t = (p - p1) / (1 - p1);
   return T + 10 * Math.exp(-5 * t) * Math.sin(3 * Math.PI * t);
 }
-function barrelHTML() {
-  const sp = st().spin || {};
-  const spinning = sp.status === "spinning";
-  const done = sp.status === "done";
-  const idx = sp.idx | 0;
-  const result = done ? sp.result : null;
-  const elapsed = spinning ? Math.max(0, net.now() - (sp.ts || net.now())) : 0;
-  const ang = spinning ? barrelAngle(idx, elapsed) : done ? barrelTarget(idx) : 0;
-  const COL = { blank: "#FFF3DC", easy: "#2FBF71", mid: "#FFA41B", deadly: "#E5007D" };
-  const chambers = CHAMBERS.map((k, i) => {
-    const a = (i * 60 - 90) * Math.PI / 180;
-    const x = 100 + 52 * Math.cos(a), y = 100 + 52 * Math.sin(a);
-    const hit = done && i === idx;
-    return `<g class="ch ${hit ? "hit" : ""}"><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="21" fill="${COL[k]}" stroke="#0E0A24" stroke-width="4"/>
-      <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="11" fill="#0E0A24" opacity=".85"/>
-      <text x="${x.toFixed(1)}" y="${(y + 5).toFixed(1)}" text-anchor="middle" font-size="14" fill="#FFF3DC" font-weight="800">${k === "blank" ? "×" : k === "easy" ? "1" : k === "mid" ? "2" : "3"}</text></g>`;
+// Універсальний барабан: items = [{t: напис, fill, ink}], idx — де зупиниться.
+function drumHTML(o) {
+  const n = o.items.length, stp = 360 / n;
+  const spinning = !!o.spinning, done = !!o.done;
+  const elapsed = spinning ? Math.max(0, net.now() - (o.ts || net.now())) : 0;
+  const ang = spinning ? barrelAngle(o.idx, elapsed, n) : done ? barrelTarget(o.idx, n) : 0;
+  const R = n > 6 ? 62 : 52, r = n > 6 ? 18 : 21;
+  const ch = o.items.map((it, i) => {
+    const a = (i * stp - 90) * Math.PI / 180;
+    const x = (100 + R * Math.cos(a)).toFixed(1), y = (100 + R * Math.sin(a)).toFixed(1);
+    const hit = done && i === o.idx;
+    return `<g class="ch ${hit ? "hit" : ""}"><circle cx="${x}" cy="${y}" r="${r}" fill="${it.fill}" stroke="#0E0A24" stroke-width="4"/>
+      <text x="${x}" y="${(+y + (it.big ? 7 : 5)).toFixed(1)}" text-anchor="middle" font-size="${it.big ? 20 : 14}" fill="${it.ink || "#FFF3DC"}" font-weight="800">${it.t}</text></g>`;
   }).join("");
-  const flutes = [0, 1, 2, 3, 4, 5].map((i) => {
-    const a = (i * 60 - 60) * Math.PI / 180;
-    return `<ellipse cx="${(100 + 82 * Math.cos(a)).toFixed(1)}" cy="${(100 + 82 * Math.sin(a)).toFixed(1)}" rx="7" ry="13" transform="rotate(${i * 60 - 60 + 90} ${(100 + 82 * Math.cos(a)).toFixed(1)} ${(100 + 82 * Math.sin(a)).toFixed(1)})" fill="#2A1D5C"/>`;
-  }).join("");
-  return `<div class="barrel-wrap">
-    <div class="barrel ${spinning ? "spinning" : ""} ${done ? "landed lvl-" + result : ""}">
+  const flutes = n === 6 ? [0, 1, 2, 3, 4, 5].map((i) => {
+    const a = (i * 60 - 60) * Math.PI / 180, fx = (100 + 82 * Math.cos(a)).toFixed(1), fy = (100 + 82 * Math.sin(a)).toFixed(1);
+    return `<ellipse cx="${fx}" cy="${fy}" rx="7" ry="13" transform="rotate(${i * 60 + 30} ${fx} ${fy})" fill="#2A1D5C"/>`;
+  }).join("") : "";
+  return `<div class="barrel ${o.cls || ""} ${spinning ? "spinning" : ""} ${done ? "landed " + (o.landCls || "") : ""}">
       <svg class="pin" viewBox="0 0 40 30" aria-hidden="true"><path d="M2 2 H38 L20 28 Z" fill="#FFF3DC" stroke="#0E0A24" stroke-width="4" stroke-linejoin="round"/></svg>
-      <svg class="cyl" viewBox="0 0 200 200" style="transform:rotate(${ang.toFixed(2)}deg)" role="img" aria-label="Барабан">
+      <svg class="cyl" viewBox="0 0 200 200" data-spin="${spinning ? 1 : 0}" data-ts="${o.ts || 0}" data-idx="${o.idx | 0}" data-n="${n}" data-mine="${o.mine ? 1 : 0}" style="transform:rotate(${ang.toFixed(2)}deg)" role="img" aria-label="Барабан">
         <circle cx="100" cy="100" r="96" fill="#3B2D78" stroke="#0E0A24" stroke-width="6"/>
-        ${flutes}
-        ${chambers}
+        ${flutes}${ch}
         <circle cx="100" cy="100" r="15" fill="#FFA41B" stroke="#0E0A24" stroke-width="4"/>
       </svg>
       <div class="glare" aria-hidden="true"></div>
-    </div>
+    </div>`;
+}
+function barrelHTML() {
+  const sp = st().spin || {};
+  const spinning = sp.status === "spinning", done = sp.status === "done";
+  const result = done ? sp.result : null;
+  const COL = { blank: "#FFF3DC", easy: "#2FBF71", mid: "#FFA41B", deadly: "#E5007D" };
+  const items = CHAMBERS.map((k) => ({ t: k === "blank" ? "×" : k === "easy" ? "1" : k === "mid" ? "2" : "3", fill: COL[k], ink: k === "blank" ? "#0E0A24" : "#FFF3DC" }));
+  const mine = ROLE === "play" && st().shooter === myPid;
+  return `<div class="barrel-wrap">
+    ${drumHTML({ items, idx: sp.idx | 0, ts: sp.ts, spinning, done, mine, landCls: "lvl-" + result })}
     ${result ? `<div class="barrel-result lvl-${result}">${LEVEL_ICON[result]} ${LEVEL_UA[result]}${result === "blank" ? " — без питання, +" + money(CFG.BLANK_REWARD) : ""}</div>`
       : spinning ? `<div class="barrel-result dim">Барабан крутиться…</div>` : ""}
     <div class="barrel-legend"><span><b>×</b> холосте: гроші без питання</span><span><b>1</b> легке</span><span><b>2</b> середнє</span><span><b>3</b> смертельне</span></div>
   </div>`;
 }
+// «Все або нічого» — барабан з кулями
+function nadaHTML(rd) {
+  const nd = rd.nada || {};
+  const items = NADA_CH.map((k) => k === "x2" ? { t: "×2", fill: "#2FBF71" } : { t: "💀", fill: "#E5007D", big: true });
+  const mine = ROLE === "play" && (teams()[rd.team] || {}).captain === myPid;
+  const done = nd.status === "done";
+  return `<div class="barrel-wrap nada-wrap">
+    <div class="nada-title">🔫 ВСЕ АБО НІЧОГО</div>
+    ${drumHTML({ items, idx: nd.idx | 0, ts: nd.ts, spinning: nd.status === "spinning", done, mine, cls: "small", landCls: nd.win ? "lvl-easy" : "lvl-deadly" })}
+    ${done ? `<div class="barrel-result ${nd.win ? "lvl-easy" : "lvl-deadly"}">${nd.win ? "×2! Виграш подвоєно: +" + money(rd.delta) : "💀 Куля! Виграш згорів: −" + money(rd.delta)}</div>`
+      : `<div class="barrel-result dim">4 холостих — ×2, 2 кулі — виграш згорає…</div>`}
+  </div>`;
+}
+// Лотерея — колесо з картками
+function loteriaHTML(ev) {
+  const items = LOTERIA_CARDS.map((c) => ({ t: c.icon, fill: "#FFF3DC", big: true }));
+  const spinning = !ev.applied, c = LOTERIA_CARDS[ev.ci] || ev.card;
+  return `<div class="barrel-wrap lot-wrap">
+    <div class="nada-title">🎴 ЛОТЕРЕЯ</div>
+    ${drumHTML({ items, idx: ev.ci | 0, ts: ev.ts, spinning, done: !spinning, cls: "lot", landCls: "lvl-mid" })}
+    ${spinning ? `<div class="barrel-result dim">Колесо долі крутиться…</div>`
+      : `<div class="loteria-card"><div class="lot-ico">${c.icon}</div><div class="lot-name">${esc(c.ua || c.name)}</div><div class="lot-text">${esc(c.text)}</div></div>`}
+  </div>`;
+}
 // Плавна анімація: кожен кадр рахує кут від часу, тож перемальовування сторінки її не збиває.
-let barrelSeg = null;
+const drumSeg = new Map();
 function barrelLoop() {
-  const sp = (st() || {}).spin || {};
-  if (sp.status === "spinning") {
-    const el = Math.max(0, net.now() - (sp.ts || net.now()));
-    const a = barrelAngle(sp.idx | 0, el), a2 = barrelAngle(sp.idx | 0, el + 16);
-    const v = Math.abs(a2 - a);
-    document.querySelectorAll(".cyl").forEach((c) => {
+  try {
+    document.querySelectorAll('.cyl[data-spin="1"]').forEach((c) => {
+      const ts = +c.dataset.ts, idx = +c.dataset.idx, n = +c.dataset.n || 6;
+      const el = Math.max(0, net.now() - ts);
+      const a = barrelAngle(idx, el, n), v = Math.abs(barrelAngle(idx, el + 16, n) - a);
       c.style.transform = "rotate(" + a.toFixed(2) + "deg)";
-      c.classList.toggle("blur2", v > 14); c.classList.toggle("blur1", v > 6 && v <= 14);
+      c.classList.toggle("blur2", v > 14 && el < SPIN_MS); c.classList.toggle("blur1", v > 6 && v <= 14 && el < SPIN_MS);
+      const seg = Math.floor((a + 180 / n) / (360 / n)), prev = drumSeg.get(ts);
+      if (prev !== undefined && seg !== prev && el < SPIN_MS) {
+        const mine = c.dataset.mine === "1";
+        if (ROLE === "projector" || mine) snd("rtick");
+        if (mine && navigator.vibrate) try { navigator.vibrate(8); } catch (e) {}
+      }
+      drumSeg.set(ts, seg);
+      if (drumSeg.size > 20) drumSeg.delete(drumSeg.keys().next().value);
     });
-    const seg = Math.floor((a + 30) / 60);
-    if (barrelSeg !== null && seg !== barrelSeg && el < SPIN_MS) {
-      const meShooter = ROLE === "play" && st().shooter === myPid;
-      if (ROLE === "projector" || meShooter) snd("rtick");
-      if (meShooter && navigator.vibrate) try { navigator.vibrate(8); } catch (e) {}
-    }
-    barrelSeg = seg;
-  } else {
-    if (barrelSeg !== null && sp.status === "done" && ROLE === "play" && st().shooter === myPid && navigator.vibrate) try { navigator.vibrate([60, 40, 120]); } catch (e) {}
-    barrelSeg = null;
-    document.querySelectorAll(".cyl.blur1,.cyl.blur2").forEach((c) => c.classList.remove("blur1", "blur2"));
-  }
+  } catch (e) {}
   requestAnimationFrame(barrelLoop);
 }
 function questionBodyHTML(q, forRole, myAnswer) {
@@ -800,7 +892,7 @@ function renderProjector(app) {
       center = `<div class="reveal ${rd.ok >= 0.999 ? "good" : rd.ok >= 0.5 ? "part" : "bad"}">
         <div class="reveal-big">${rd.blank ? "⚪ ХОЛОСТИЙ!" : rd.ok >= 0.999 ? "✅ ПРАВИЛЬНО!" : rd.ok >= 0.5 ? "🟡 ЧАСТКОВО (" + Math.round(rd.ok * 100) + "%)" : "💥 ПРОВАЛ!"}</div>
         <div class="reveal-delta">${rd.delta >= 0 ? "+" : ""}${money(rd.delta)}${rd.dirty ? " 🧺 (треба відмити!)" : ""}</div>
-        ${rd.nada ? `<div class="nada-res">🪙 Все або нічого: ${rd.nada.win ? "ПОДВОЄННЯ!" : "ВСЕ ЗГОРІЛО!"}</div>` : ""}
+        ${rd.nada ? nadaHTML(rd) : rd.canNada ? `<div class="reveal-expl">Капітан може ризикнути: 🔫 «Все або нічого»</div>` : ""}
         ${rd.answer ? `<div class="reveal-expl"><b>Правильна відповідь:</b><br>${esc(rd.answer).split("; ").join("<br>")}</div>` : ""}
         ${rd.expl ? `<div class="reveal-expl">${esc(rd.expl)}</div>` : ""}
         ${rd.shadow && rd.shadow.n ? `<div class="reveal-expl">👥 Інші команди відповідали «тіньово»: правильно ${rd.shadow.ok} з ${rd.shadow.n}</div>` : ""}
@@ -818,8 +910,13 @@ function renderProjector(app) {
       const q = LAVADO_POOL[s.event.qi];
       center = `<div class="lav-card"><div class="lav-head">🧺 ВІДМИВАННЯ ГРОШЕЙ</div><div class="q-text">${esc(q.q)}</div><div class="raid-sub">Відповідають картелі: ${s.event.teams.map((tid) => teams()[tid].name).join(", ")}</div></div>`;
     }
-    if (s.event && s.event.kind === "loteria") center = `<div class="loteria-card"><div class="lot-ico">${s.event.card.icon}</div><div class="lot-name">${esc(s.event.card.name)}</div><div class="lot-text">${esc(s.event.card.text)}</div></div>`;
-    if (s.phase === "between" && (!s.event || ["raid_result", "duel_result", "lavado_result"].includes(s.event.kind) === false) && !center) center = `<div class="center-msg">Раунд ${s.round} завершено.<br><span class="dim">La Jefa вирішує, що далі…</span></div>${territoriesHTML(false)}`;
+    if (s.phase === "loteria" && s.event && s.event.kind === "loteria") center = loteriaHTML(s.event);
+    if (s.phase === "event_result" && s.event && s.event.kind === "lavado_result") center = `<div class="lav-card done"><div class="lav-head">🧺 Відмивання завершено</div>
+      <div class="q-text">${Object.keys(s.event.res || {}).map((t) => `${esc((teams()[t] || {}).name || "")}: ${s.event.res[t] === "ok" ? "✅ відмили" : "❌ спалились, −50%"}`).join("<br>")}</div>
+      ${s.event.answer ? `<div class="reveal-expl"><b>Правильно:</b> ${esc(s.event.answer)}</div>` : ""}</div>`;
+    if (s.phase === "event_result" && s.event && s.event.kind === "raid_result") center = center.replace("</div></div>", "</div>" + raidTeamsHTML(s.event) + "</div>");
+    if (center && (s.phase === "event_result" || (s.phase === "loteria" && s.event && s.event.applied)) && s.resumeAt) center += resumeBarHTML(s.resumeAt);
+    if (s.phase === "between" && !center) center = `<div class="center-msg">Раунд ${s.round} завершено.<br><span class="dim">La Jefa вирішує, що далі…</span></div>${territoriesHTML(false)}`;
     if (!center) center = territoriesHTML(false);
 
     main = `<div class="proj-game">
@@ -832,6 +929,38 @@ function renderProjector(app) {
   if ((!s.phase || s.phase === "lobby") && window.QRCode) {
     const qel = $("#qrcode"); if (qel) { qel.innerHTML = ""; new QRCode(qel, { text: playURL, width: 200, height: 200, colorDark: "#0E0A24", colorLight: "#FFF3DC" }); }
   }
+}
+
+function raidTeamsHTML(ev) {
+  const pt = ev.perTeam || {};
+  return `<div class="raid-teams">${Object.keys(pt).map((t) => { const d = pt[t].ok * CFG.RAID_OK - pt[t].bad * CFG.RAID_BAD;
+    return `<span class="bet-chip" style="--tc:${(TEAM_DEFS.find((x) => x.id === t) || {}).color}">${esc((teams()[t] || {}).name || "")}: ${pt[t].ok}✓ ${pt[t].bad}✗ → ${d >= 0 ? "+" : ""}${money(d)}</span>`; }).join("")}</div>`;
+}
+function resumeBarHTML(at) {
+  const total = CFG.RESULT_SHOW_MS, left = Math.max(0, at - net.now());
+  return `<div class="resume-bar"><span style="animation-duration:${total}ms;animation-delay:-${total - left}ms"></span></div><div class="dim small center">Гра продовжиться автоматично</div>`;
+}
+// результат події на телефоні — особисто для студента
+function eventResultPlayHTML(ev, tid) {
+  if (!ev) return `<div class="center-msg">Дивись на проєктор 👀</div>`;
+  if (ev.kind === "raid_result") {
+    const mine = (ev.votes || {})[myPid]; const okk = mine === ev.a;
+    const pt = (ev.perTeam || {})[tid]; const d = pt ? pt.ok * CFG.RAID_OK - pt.bad * CFG.RAID_BAD : 0;
+    return `<div class="reveal ${okk ? "good" : "bad"}"><div class="reveal-big">${mine == null ? "😶 Ти не відповів" : okk ? "✅ Ти вгадав" : "❌ Ти помилився"}</div>
+      <div class="reveal-expl">Правильно: <b>${ev.a ? "ТАК" : "НІ"}</b>${ev.expl ? " — " + esc(ev.expl) : ""}</div>
+      ${pt ? `<div class="reveal-delta">Команда: ${d >= 0 ? "+" : ""}${money(d)}</div>` : ""}</div>`;
+  }
+  if (ev.kind === "duel_result") {
+    const inDuel = [ev.t1, ev.t2].includes(tid);
+    return `<div class="reveal ${ev.winner === tid ? "good" : inDuel ? "bad" : ""}"><div class="reveal-big">${ev.winner ? (ev.winner === tid ? "🏆 Ви виграли дуель!" : "⚔️ Дуель виграли «" + esc(teams()[ev.winner].name) + "»") : "⚔️ Нічия — обидва промахнулись"}</div>
+      <div class="reveal-expl">Відповідь: ${esc(ev.correct)}</div></div>`;
+  }
+  if (ev.kind === "lavado_result") {
+    const r = (ev.res || {})[tid];
+    return `<div class="reveal ${r === "ok" ? "good" : r ? "bad" : ""}"><div class="reveal-big">${r === "ok" ? "✅ Гроші відмито!" : r ? "❌ Спалились: −50% брудних" : "🧺 Відмивання завершено"}</div>
+      ${ev.answer ? `<div class="reveal-expl">Правильно: ${esc(ev.answer)}</div>` : ""}</div>`;
+  }
+  return `<div class="center-msg">Дивись на проєктор 👀</div>`;
 }
 
 // ---------- ТЕЛЕФОН СТУДЕНТА ----------
@@ -934,8 +1063,8 @@ function renderPlay(app) {
     body = `<div class="reveal ${rd.ok >= 0.999 ? "good" : rd.ok >= 0.5 ? "part" : "bad"}">
       <div class="reveal-big">${rd.blank ? "⚪ ХОЛОСТИЙ!" : rd.ok >= 0.999 ? "✅ ПРАВИЛЬНО" : rd.ok >= 0.5 ? "🟡 ЧАСТКОВО" : "💥 ПРОВАЛ"}</div>
       ${rd.team === tid ? `<div class="reveal-delta">${rd.delta >= 0 ? "+" : ""}${money(rd.delta)}${rd.dirty ? " 🧺" : ""}</div>` : ""}
-      ${rd.team === tid && isCap && rd.canNada ? `<button class="btn big danger-btn" id="nadaBtn">🪙 ВСЕ АБО НІЧОГО (подвоїти чи втратити)</button>` : ""}
-      ${rd.nada ? `<div class="nada-res">🪙 ${rd.nada.win ? "ПОДВОЄННЯ!" : "Втрачено все…"}</div>` : ""}
+      ${rd.team === tid && isCap && rd.canNada ? `<div class="nada-offer"><b>Ризикнеш?</b> Барабан: 4 холостих — виграш ×2, 2 кулі — виграш згорає.</div><button class="btn big danger-btn" id="nadaBtn">🔫 ВСЕ АБО НІЧОГО</button>` : ""}
+      ${rd.nada ? nadaHTML(rd) : ""}
     </div>`;
   }
   // --- облава ---
@@ -963,6 +1092,8 @@ function renderPlay(app) {
     ${inLav && isCap && !already ? questionBodyHTML(q, "act", draftAnswer) + `<button class="btn big" id="lavSubmit">✅ Відмити</button>` :
       inLav ? `<div class="dim">${already ? "Надіслано!" : "Відповідає капітан — радьте йому вголос!"}</div>` : `<div class="dim">У вас чисті гроші 😇</div>`}</div>`;
   }
+  else if (s.phase === "loteria" && s.event) body = loteriaHTML(s.event);
+  else if (s.phase === "event_result") body = eventResultPlayHTML(s.event, tid);
   else if (s.phase === "final" && s.finalData) {
     const row = s.finalData.rows.find((r) => r.tid === tid);
     const pos = s.finalData.rows.indexOf(row) + 1;
@@ -1022,7 +1153,7 @@ function renderPlay(app) {
     snd("click"); uiToast("Підказку надіслано 👍");
   });
   $("#oralReady") && ($("#oralReady").onclick = () => net.set("state/q/oralReady", true));
-  $("#nadaBtn") && ($("#nadaBtn").onclick = (e) => { snd("coin"); act("nada"); e.target.disabled = true; });
+  $("#nadaBtn") && ($("#nadaBtn").onclick = (e) => { snd("spin"); act("nada"); e.target.disabled = true; e.target.textContent = "Крутимо…"; });
   app.querySelectorAll(".bet-btn").forEach((b) => b.onclick = () => {
     const amt = +b.dataset.amt;
     if ((t.cash | 0) < amt) { uiToast("Не вистачає готівки на цю ставку"); return; }
@@ -1057,6 +1188,8 @@ function nowBanner(s, tid, isCap, myTurn, shooter, silenced) {
   else if (ph === "duel") { const inDuel = s.event && [s.event.t1, s.event.t2].includes(tid); act = inDuel && isCap && !((S.duelAns || {})[tid] || {}).by; txt = act ? "👆 Дуель! Обери відповідь — швидше за суперника." : inDuel ? "⚔️ Дуель: відповідає ваш капітан. Підказуйте вголос!" : "👀 Дуель двох команд. Дивись на проєктор."; }
   else if (ph === "lavado") { const inLav = s.event && (s.event.teams || []).includes(tid); act = inLav && isCap && !((S.lavAns || {})[tid] || {}).by; txt = act ? "👆 Відмивання: дай відповідь, щоб гроші стали чистими." : inLav ? "🧺 Відповідає ваш капітан. Підказуйте вголос!" : "👀 Відмивання в інших команд. Чекай."; }
   else if (ph === "between") txt = "⏳ Раунд завершено. Чекай, що вирішить викладач.";
+  else if (ph === "loteria") txt = "🎴 Лотерея! Колесо долі крутиться — дивись.";
+  else if (ph === "event_result") txt = "👀 Результат події. Гра зараз продовжиться сама.";
   else if (myTurn) {
     if (ph === "turn") { act = isCap; txt = isCap ? "👆 Ваш хід! Обери, хто з команди відповідає." : "⏳ Ваш хід! Капітан обирає, хто відповідає."; }
     else if (ph === "spin") { act = shooter && (!s.spin || s.spin.status === "idle"); txt = act ? "👆 Ти відповідаєш! Обери тему й крути барабан." : shooter ? "🔫 Барабан крутиться…" : "🔫 Ваш гравець крутить барабан. Дивись!"; }
@@ -1144,12 +1277,13 @@ function renderAdmin(app) {
     </div>
     <div class="adm-box">
       <div class="adm-title">Події Хефи</div>
-      <button class="btn" id="aRaid">🚔 Облава</button>
-      <button class="btn" id="aLot">🎴 Лотерея</button>
-      <button class="btn" id="aLav">🧺 Відмивання</button>
+      ${EVENT_OK_PHASES.includes(s.phase) ? `<div class="dim small">Після події гра сама продовжить з того ж ходу.</div>` : `<div class="dim small">Події запускаються між ходами (не під час барабана чи питання).</div>`}
+      <button class="btn" id="aRaid" ${EVENT_OK_PHASES.includes(s.phase) ? "" : "disabled"}>🚔 Облава</button>
+      <button class="btn" id="aLot" ${EVENT_OK_PHASES.includes(s.phase) ? "" : "disabled"}>🎴 Лотерея</button>
+      <button class="btn" id="aLav" ${EVENT_OK_PHASES.includes(s.phase) ? "" : "disabled"}>🧺 Відмивання</button>
       <div class="duel-pick">⚔️ Дуель: <select id="aD1">${activeTids().map((t) => `<option value="${t}">${esc((teams()[t] || TEAM_DEFS.find((x) => x.id === t)).name)}</option>`).join("")}</select>
       <select id="aD2">${activeTids().map((t) => `<option value="${t}">${esc((teams()[t] || TEAM_DEFS.find((x) => x.id === t)).name)}</option>`).join("")}</select>
-      <button class="btn mini" id="aDuel">Старт</button></div>
+      <button class="btn mini" id="aDuel" ${EVENT_OK_PHASES.includes(s.phase) ? "" : "disabled"}>Старт</button></div>
     </div>
     <div class="adm-box">
       <div class="adm-title">Таймер <span id="timer" class="timer"></span></div>
@@ -1240,7 +1374,9 @@ function adminStep(s) {
     if (q && q.type === "oral") return { text: s.q.oralReady ? "Команда готова. Вислухайте відповідь, звірте зі шпаргалкою й оцініть кнопками нижче." : "Усне питання: команда готується. Таймер зупиниться, коли вони натиснуть «Готові»." };
     return { text: `${tname} відповідає. Відповідь перевіриться сама, коли вони підтвердять або скінчиться час.`, btn: "Розкрити відповідь зараз", act: () => E.reveal() }; }
   if (ph === "turn_end") return { text: "Обговоріть правильну відповідь на проєкторі, потім передайте хід далі.", btn: "➡️ Наступна команда", act: () => E.nextTurn() };
-  if (ph === "raid" || ph === "duel" || ph === "lavado") return { text: "Триває подія. Вона завершиться автоматично за таймером." };
+  if (ph === "raid" || ph === "duel" || ph === "lavado") return { text: "Триває подія. Завершиться сама — щойно всі відповіли або скінчився час." };
+  if (ph === "loteria") return { text: "Крутиться лотерея. Ефект застосується автоматично, потім гра продовжиться." , btn: (s.event && s.event.applied) ? "➡️ Продовжити зараз" : null, act: () => E.resume() };
+  if (ph === "event_result") return { text: "Результат події на проєкторі. Гра продовжиться автоматично за кілька секунд.", btn: "➡️ Продовжити зараз", act: () => E.resume() };
   if (ph === "between") return r < CFG.ROUNDS
     ? { text: `Раунд ${r} завершено. За бажанням запустіть подію (облава, лотерея, дуель) або почніть наступний раунд.`, btn: `▶ Почати раунд ${r + 1}`, act: () => E.startRound(r + 1) }
     : { text: "Усі раунди зіграно. Час оголосити переможця.", btn: "👑 Оголосити фінал", act: () => E.final() };
