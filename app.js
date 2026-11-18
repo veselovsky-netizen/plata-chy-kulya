@@ -777,11 +777,12 @@ function nadaHTML(rd) {
 function loteriaHTML(ev) {
   const items = LOTERIA_CARDS.map((c) => ({ t: c.icon, fill: "#FFF3DC", big: true }));
   const spinning = !ev.applied, c = LOTERIA_CARDS[ev.ci] || ev.card;
+  if (!spinning) return `<div class="barrel-wrap lot-wrap"><div class="nada-title">🎴 ЛОТЕРЕЯ: випала картка</div>
+    <div class="loteria-card"><div class="lot-ico">${c.icon}</div><div class="lot-name">${esc(c.ua || c.name)}</div><div class="lot-text">${esc(c.text)}</div></div></div>`;
   return `<div class="barrel-wrap lot-wrap">
     <div class="nada-title">🎴 ЛОТЕРЕЯ</div>
-    ${drumHTML({ items, idx: ev.ci | 0, ts: ev.ts, spinning, done: !spinning, cls: "lot", landCls: "lvl-mid" })}
-    ${spinning ? `<div class="barrel-result dim">Колесо долі крутиться…</div>`
-      : `<div class="loteria-card"><div class="lot-ico">${c.icon}</div><div class="lot-name">${esc(c.ua || c.name)}</div><div class="lot-text">${esc(c.text)}</div></div>`}
+    ${drumHTML({ items, idx: ev.ci | 0, ts: ev.ts, spinning: true, cls: "lot" })}
+    <div class="barrel-result dim">Колесо долі крутиться…</div>
   </div>`;
 }
 // Плавна анімація: кожен кадр рахує кут від часу, тож перемальовування сторінки її не збиває.
@@ -1188,7 +1189,7 @@ function nowBanner(s, tid, isCap, myTurn, shooter, silenced) {
   else if (ph === "duel") { const inDuel = s.event && [s.event.t1, s.event.t2].includes(tid); act = inDuel && isCap && !((S.duelAns || {})[tid] || {}).by; txt = act ? "👆 Дуель! Обери відповідь — швидше за суперника." : inDuel ? "⚔️ Дуель: відповідає ваш капітан. Підказуйте вголос!" : "👀 Дуель двох команд. Дивись на проєктор."; }
   else if (ph === "lavado") { const inLav = s.event && (s.event.teams || []).includes(tid); act = inLav && isCap && !((S.lavAns || {})[tid] || {}).by; txt = act ? "👆 Відмивання: дай відповідь, щоб гроші стали чистими." : inLav ? "🧺 Відповідає ваш капітан. Підказуйте вголос!" : "👀 Відмивання в інших команд. Чекай."; }
   else if (ph === "between") txt = "⏳ Раунд завершено. Чекай, що вирішить викладач.";
-  else if (ph === "loteria") txt = "🎴 Лотерея! Колесо долі крутиться — дивись.";
+  else if (ph === "loteria") txt = s.event && s.event.applied ? "🎴 Картку лотереї витягнуто. Гра зараз продовжиться." : "🎴 Лотерея! Колесо долі крутиться — дивись.";
   else if (ph === "event_result") txt = "👀 Результат події. Гра зараз продовжиться сама.";
   else if (myTurn) {
     if (ph === "turn") { act = isCap; txt = isCap ? "👆 Ваш хід! Обери, хто з команди відповідає." : "⏳ Ваш хід! Капітан обирає, хто відповідає."; }
